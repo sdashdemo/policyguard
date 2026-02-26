@@ -1,0 +1,25 @@
+{
+  "name": "policyguard",
+  "version": "6.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "14.2.21",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@anthropic-ai/sdk": "^0.39.0",
+    "drizzle-orm": "^0.38.0",
+    "postgres": "^3.4.0",
+    "mammoth": "^1.8.0",
+    "pdfjs-dist": "^4.0.379"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.1",
+    "postcss": "^8.4.33",
+    "autoprefixer": "^10.4.17"
+  }
+}

@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --color-covered: #059669;
+  --color-partial: #d97706;
+  --color-gap: #dc2626;
+  --color-review: #6366f1;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+code, .font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Coverage bar segments */
+.coverage-bar {
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  background: #e7e5e4;
+}
+
+.coverage-bar .seg-covered { background: var(--color-covered); }
+.coverage-bar .seg-partial { background: var(--color-partial); }
+.coverage-bar .seg-gap { background: var(--color-gap); }
+
+/* Subtle row hover */
+.row-hover:hover { background: #fafaf9; }
+
+/* Status badge styles */
+.badge { @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium tracking-wide; }
+.badge-covered { @apply bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200; }
+.badge-partial { @apply bg-amber-50 text-amber-700 ring-1 ring-amber-200; }
+.badge-gap { @apply bg-red-50 text-red-700 ring-1 ring-red-200; }
+.badge-review { @apply bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200; }
+.badge-na { @apply bg-stone-100 text-stone-500 ring-1 ring-stone-200; }
+
+/* Tab navigation */
+.nav-tab {
+  @apply px-3 py-2 text-sm font-medium rounded-md transition-colors;
+}
+.nav-tab:hover { @apply bg-stone-100 text-stone-900; }
+.nav-tab.active { @apply bg-stone-900 text-white; }
+
+/* Card */
+.card {
+  @apply bg-white rounded-lg border border-stone-200 shadow-sm;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  animation: fadeIn 0.15s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Checkbox styling */
+input[type="checkbox"] {
+  @apply rounded border-stone-300 text-stone-900 focus:ring-stone-500;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
