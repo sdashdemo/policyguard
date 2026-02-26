@@ -25,20 +25,19 @@ const STATUS_COLORS = {
 };
 
 const LOC_OPTIONS = [
-  { id: 'detox', label: 'Detox / Withdrawal Mgmt' },
-  { id: 'residential', label: 'Residential' },
+  { id: 'detox', label: 'Detox' },
+  { id: 'residential', label: 'Res' },
   { id: 'php', label: 'PHP' },
   { id: 'iop', label: 'IOP' },
-  { id: 'op', label: 'Outpatient' },
-  { id: 'mat', label: 'MAT' },
+  { id: 'op', label: 'OP' },
+  { id: 'mh_rtf', label: 'MH RTF' },
+  { id: 'mh_php', label: 'MH PHP' },
+  { id: 'otp', label: 'OTP' },
 ];
 
-const LICENSE_OPTIONS = [
-  { id: 'sud_datep', label: 'SUD DATEP' },
-  { id: 'mh_rtf', label: 'MH RTF' },
-  { id: 'otp_buprenorphine', label: 'OTP — Buprenorphine' },
-  { id: 'otp_methadone', label: 'OTP — Methadone' },
-  { id: 'ccbhc', label: 'CCBHC' },
+const ACCREDITATION_OPTIONS = [
+  { id: 'tjc', label: 'TJC' },
+  { id: 'carf', label: 'CARF' },
 ];
 
 const STATES = ['FL','GA','MD','NJ','OH','MO','IN','CO','WA','OR'];
@@ -561,7 +560,7 @@ function FacilityMatrixMode() {
     <div className="page-enter space-y-4">
       <div>
         <h1 className="text-xl font-semibold">Facility Matrix</h1>
-        <p className="text-sm text-stone-500">Configure levels of care and license types for each facility</p>
+        <p className="text-sm text-stone-500">Levels of care (editable) · License types (from master data) · Accreditations (editable)</p>
       </div>
 
       <div className="card overflow-x-auto">
@@ -573,10 +572,12 @@ function FacilityMatrixMode() {
               {LOC_OPTIONS.map(loc => (
                 <th key={loc.id} className="px-2 py-2 text-center font-medium text-stone-500 whitespace-nowrap">{loc.label}</th>
               ))}
-              <th className="px-1 py-2" />
-              {LICENSE_OPTIONS.map(lic => (
-                <th key={lic.id} className="px-2 py-2 text-center font-medium text-stone-500 whitespace-nowrap">{lic.label}</th>
+              <th className="px-1 py-2 border-l border-stone-100" />
+              {ACCREDITATION_OPTIONS.map(acc => (
+                <th key={acc.id} className="px-2 py-2 text-center font-medium text-stone-500 whitespace-nowrap">{acc.label}</th>
               ))}
+              <th className="px-1 py-2 border-l border-stone-100" />
+              <th className="px-3 py-2 text-left font-medium text-stone-500 min-w-[250px]">License Types</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-stone-100">
@@ -598,16 +599,26 @@ function FacilityMatrixMode() {
                   </td>
                 ))}
                 <td className="px-1 py-2 border-l border-stone-100" />
-                {LICENSE_OPTIONS.map(lic => (
-                  <td key={lic.id} className="px-2 py-2 text-center">
+                {ACCREDITATION_OPTIONS.map(acc => (
+                  <td key={acc.id} className="px-2 py-2 text-center">
                     <input
                       type="checkbox"
-                      checked={(fac.license_types || []).includes(lic.id)}
-                      onChange={() => toggleAttr(fac.facility_id, 'license_types', lic.id)}
+                      checked={(fac.accreditations || []).includes(acc.id)}
+                      onChange={() => toggleAttr(fac.facility_id, 'accreditations', acc.id)}
                       className="rounded"
                     />
                   </td>
                 ))}
+                <td className="px-1 py-2 border-l border-stone-100" />
+                <td className="px-3 py-2">
+                  <div className="flex flex-wrap gap-1">
+                    {(fac.license_types || []).map(lt => (
+                      <span key={lt} className="inline-block px-1.5 py-0.5 bg-stone-100 text-stone-600 rounded text-[10px]">
+                        {lt.replace(/_/g, ' ')}
+                      </span>
+                    ))}
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
