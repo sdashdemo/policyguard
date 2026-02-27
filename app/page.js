@@ -1130,15 +1130,33 @@ function PipelineMode() {
     }
 
     if (stepId === 'index_policies') {
-      addLog('Starting policy indexing (this takes a while for 370+ policies)...');
+      addLog('Starting policy indexing...');
       try {
-        const res = await fetch('/api/index-policy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scope: 'unindexed' }),
-        });
-        const data = await res.json();
-        addLog(`✓ Indexed ${data.indexed || data.total || '?'} policies`);
+        let done = false;
+        let totalIndexed = 0;
+        let totalProvisions = 0;
+        while (!done) {
+          const res = await fetch('/api/v6/index', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            addLog(`  ✗ Error: ${data.error}`);
+            break;
+          }
+          if (data.done) {
+            done = true;
+          } else if (data.skipped) {
+            addLog(`  ⏭ Skipped: ${data.reason}`);
+          } else {
+            totalIndexed++;
+            totalProvisions += data.provisions_inserted || 0;
+            addLog(`  ✓ ${data.policy_number || '?'} — ${data.title || '?'} (${data.provisions_inserted} provisions) [${data.remaining} left]`);
+          }
+        }
+        addLog(`✓ Indexing complete: ${totalIndexed} policies, ${totalProvisions} provisions`);
       } catch (err) {
         addLog(`✗ Indexing error: ${err.message}`);
       }
