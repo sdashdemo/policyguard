@@ -110,64 +110,47 @@ export async function GET() {
 
 export async function POST(req) {
   try {
-    const { source_id } = await req.json();
+    const { source_id, chunk_index } = await req.json();
 
     if (!source_id) {
       return Response.json({ error: 'source_id required' }, { status: 400 });
     }
 
-    // Get the source
     const [source] = await db.select().from(regSources).where(eq(regSources.id, source_id));
     if (!source) {
       return Response.json({ error: 'Source not found' }, { status: 404 });
     }
 
     const chunks = chunkText(source.full_text);
+    const idx = chunk_index || 0;
+
+    if (idx >= chunks.length) {
+      return Response.json({ ok: true, done: true, source_id: source.id });
+    }
+
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    let allRequirements = [];
-    const chunkErrors = [];
 
-    for (let i = 0; i < chunks.length; i++) {
-      try {
-        const message = await client.messages.create({
-          model: MODEL_ID,
-          max_tokens: 16000,
-          messages: [{
-            role: 'user',
-            content: EXTRACT_PROMPT(
-              source.name,
-              source.source_type,
-              source.citation_root,
-              chunks[i],
-              i,
-              chunks.length
-            )
-          }],
-        });
+    const message = await client.messages.create({
+      model: MODEL_ID,
+      max_tokens: 16000,
+      messages: [{
+        role: 'user',
+        content: EXTRACT_PROMPT(
+          source.name,
+          source.source_type,
+          source.citation_root,
+          chunks[idx],
+          idx,
+          chunks.length
+        )
+      }],
+    });
 
-        const parsed = parseJSON(message.content[0].text);
-        const reqs = parsed.requirements || [];
-        allRequirements = allRequirements.concat(reqs);
-      } catch (err) {
-        chunkErrors.push({ chunk: i, error: err.message });
-      }
-    }
+    const parsed = parseJSON(message.content[0].text);
+    const reqs = parsed.requirements || [];
 
-    // Deduplicate by citation
-    const seen = new Map();
-    for (const req of allRequirements) {
-      const key = req.citation?.trim();
-      if (key && !seen.has(key)) {
-        seen.set(key, req);
-      } else if (!key) {
-        seen.set(`_nokey_${seen.size}`, req);
-      }
-    }
-    const deduped = Array.from(seen.values());
-
-    // Store in obligations table
     let inserted = 0;
-    for (const req of deduped) {
+    for (const req of reqs) {
       try {
         const id = ulid('obl');
         await db.insert(obligations).values({
@@ -180,30 +163,33 @@ export async function POST(req) {
         });
         inserted++;
       } catch (err) {
-        // Skip duplicates or insert errors
+        // skip dupes
       }
     }
 
-    await logAuditEvent({
-      event_type: 'extraction',
-      entity_type: 'reg_source',
-      entity_id: source.id,
-      actor: 'system',
-      input_summary: `${source.name} — ${chunks.length} chunks, ${source.full_text.length} chars`,
-      output_summary: `${allRequirements.length} raw → ${deduped.length} deduped → ${inserted} inserted`,
-      model_id: MODEL_ID,
-      prompt_version: 'extract_v2',
-    });
+    if (idx === chunks.length - 1) {
+      await logAuditEvent({
+        event_type: 'extraction',
+        entity_type: 'reg_source',
+        entity_id: source.id,
+        actor: 'system',
+        input_summary: `${source.name} — ${chunks.length} chunks, ${source.full_text.length} chars`,
+        output_summary: `Final chunk done. This chunk: ${reqs.length} extracted, ${inserted} inserted`,
+        model_id: MODEL_ID,
+        prompt_version: 'extract_v2',
+      });
+    }
 
     return Response.json({
       ok: true,
+      done: false,
       source_id: source.id,
       source_name: source.name,
-      chunks_processed: chunks.length,
-      raw_extracted: allRequirements.length,
-      deduped: deduped.length,
+      chunk_index: idx,
+      total_chunks: chunks.length,
+      extracted: reqs.length,
       inserted,
-      chunk_errors: chunkErrors,
+      next_chunk: idx + 1 < chunks.length ? idx + 1 : null,
     });
 
   } catch (err) {

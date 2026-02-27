@@ -1089,25 +1089,39 @@ function PipelineMode() {
             addLog(`  ⏭ ${src.name} — already has ${src.obligation_count} obligations, skipping`);
             continue;
           }
-          addLog(`  ⏳ Extracting from: ${src.name} (${Number(src.text_length).toLocaleString()} chars)...`);
-          try {
-            const res = await fetch('/api/v6/extract', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ source_id: src.id }),
-            });
-            const data = await res.json();
-            if (data.ok) {
-              addLog(`  ✓ ${src.name}: ${data.chunks_processed} chunks → ${data.raw_extracted} raw → ${data.deduped} deduped → ${data.inserted} inserted`);
-              if (data.chunk_errors?.length) {
-                data.chunk_errors.forEach(e => addLog(`    ⚠ Chunk ${e.chunk}: ${e.error}`));
+          addLog(`  ⏳ ${src.name} (${Number(src.text_length).toLocaleString()} chars)...`);
+          let chunkIdx = 0;
+          let totalInserted = 0;
+          let done = false;
+          while (!done) {
+            try {
+              const res = await fetch('/api/v6/extract', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_id: src.id, chunk_index: chunkIdx }),
+              });
+              const data = await res.json();
+              if (!data.ok) {
+                addLog(`    ✗ Chunk ${chunkIdx}: ${data.error}`);
+                break;
               }
-            } else {
-              addLog(`  ✗ ${src.name}: ${data.error}`);
+              if (data.done) {
+                done = true;
+              } else {
+                totalInserted += data.inserted || 0;
+                addLog(`    Chunk ${data.chunk_index + 1}/${data.total_chunks}: ${data.extracted} found, ${data.inserted} inserted`);
+                if (data.next_chunk !== null) {
+                  chunkIdx = data.next_chunk;
+                } else {
+                  done = true;
+                }
+              }
+            } catch (err) {
+              addLog(`    ✗ Chunk ${chunkIdx}: ${err.message}`);
+              break;
             }
-          } catch (err) {
-            addLog(`  ✗ ${src.name}: ${err.message}`);
           }
+          addLog(`  ✓ ${src.name}: ${totalInserted} obligations inserted`);
         }
         addLog('✓ Extraction complete');
       } catch (err) {
