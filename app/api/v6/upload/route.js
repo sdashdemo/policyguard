@@ -1,7 +1,8 @@
 import { db } from '@/lib/db';
 import { regSources, policies } from '@/lib/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import mammoth from 'mammoth';
+import WordExtractor from 'word-extractor';
 import Anthropic from '@anthropic-ai/sdk';
 import { logAuditEvent } from '@/lib/audit';
 
@@ -18,21 +19,16 @@ async function extractTextFromDocx(buffer) {
   return result.value;
 }
 
+async function extractTextFromDoc(buffer) {
+  const extractor = new WordExtractor();
+  const doc = await extractor.extract(buffer);
+  return doc.getBody();
+}
+
 async function extractTextFromPdf(buffer) {
-  try {
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
-    const pages = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const text = content.items.map(item => item.str).join(' ');
-      pages.push(text);
-    }
-    return pages.join('\n\n');
-  } catch (err) {
-    throw new Error(`PDF extraction failed: ${err.message}`);
-  }
+  const pdfParse = (await import('pdf-parse')).default;
+  const data = await pdfParse(buffer);
+  return data.text;
 }
 
 async function classifySource(text, filename) {
@@ -81,23 +77,18 @@ export async function POST(req) {
     const filename = file.name;
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    // Check for .doc (old format)
-    if (filename.endsWith('.doc') && !filename.endsWith('.docx')) {
-      return Response.json({
-        error: 'Old .doc format is not supported. Please save the file as .docx (File → Save As → Word Document .docx) or export as PDF, then re-upload.'
-      }, { status: 400 });
-    }
-
     // Extract text
     let fullText;
     if (filename.endsWith('.docx')) {
       fullText = await extractTextFromDocx(buffer);
+    } else if (filename.endsWith('.doc')) {
+      fullText = await extractTextFromDoc(buffer);
     } else if (filename.endsWith('.pdf')) {
       fullText = await extractTextFromPdf(buffer);
     } else if (filename.endsWith('.txt')) {
       fullText = buffer.toString('utf-8');
     } else {
-      return Response.json({ error: `Unsupported file type: ${filename}. Use .docx, .pdf, or .txt` }, { status: 400 });
+      return Response.json({ error: `Unsupported file type: ${filename}. Use .doc, .docx, .pdf, or .txt` }, { status: 400 });
     }
 
     if (!fullText || fullText.trim().length < 50) {
@@ -203,15 +194,28 @@ export async function PUT(req) {
 
     const results = [];
     const errors = [];
+    const skipped = [];
+
+    // Get existing filenames to skip duplicates
+    const existing = await db.execute(sql`SELECT source_file FROM policies WHERE source_file IS NOT NULL`);
+    const existingFiles = new Set((existing.rows || existing || []).map(r => r.source_file));
 
     for (const file of files) {
       try {
         const filename = file.name;
+
+        if (existingFiles.has(filename)) {
+          skipped.push(filename);
+          continue;
+        }
+
         const buffer = Buffer.from(await file.arrayBuffer());
         
         let fullText;
-        if (filename.endsWith('.docx') || filename.endsWith('.doc')) {
+        if (filename.endsWith('.docx')) {
           fullText = await extractTextFromDocx(buffer);
+        } else if (filename.endsWith('.doc')) {
+          fullText = await extractTextFromDoc(buffer);
         } else if (filename.endsWith('.pdf')) {
           fullText = await extractTextFromPdf(buffer);
         } else if (filename.endsWith('.txt')) {
@@ -248,14 +252,16 @@ export async function PUT(req) {
       entity_type: 'policy',
       actor: 'clo',
       input_summary: `Batch upload: ${files.length} files`,
-      output_summary: `${results.length} uploaded, ${errors.length} errors`,
+      output_summary: `${results.length} uploaded, ${skipped.length} skipped (dups), ${errors.length} errors`,
     });
 
     return Response.json({
       ok: true,
       uploaded: results.length,
+      skipped: skipped.length,
       errors: errors.length,
       results,
+      skipped_files: skipped,
       errors_detail: errors,
     });
 

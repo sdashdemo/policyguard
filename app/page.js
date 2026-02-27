@@ -1053,7 +1053,8 @@ function PipelineMode() {
         const data = await res.json();
         uploaded += data.uploaded || 0;
         errors += data.errors || 0;
-        setUploadProgress(`${uploaded}/${files.length} uploaded`);
+        const skippedCount = data.skipped || 0;
+        setUploadProgress(`${uploaded}/${files.length} uploaded${skippedCount ? `, ${skippedCount} skipped (already exist)` : ''}`);
         if (data.errors_detail?.length) {
           data.errors_detail.forEach(e => addLog(`  ✗ ${e.filename}: ${e.error}`));
         }
@@ -1192,9 +1193,9 @@ function PipelineMode() {
         <div className="flex items-center gap-3">
           <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
             {uploading ? 'Uploading & classifying...' : 'Choose File'}
-            <input type="file" accept=".docx,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
+            <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
           </label>
-          <p className="text-xs text-stone-400">.docx, .pdf, or .txt — one at a time. Old .doc format not supported (save as .docx first).</p>
+          <p className="text-xs text-stone-400">.doc, .docx, .pdf, or .txt — one at a time</p>
         </div>
       </div>
 
@@ -1209,11 +1210,11 @@ function PipelineMode() {
           <div>
             <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
               {uploading ? 'Uploading...' : 'Choose Files'}
-              <input type="file" accept=".docx,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploading} className="hidden" />
+              <input type="file" accept=".docx,.doc,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploading} className="hidden" />
             </label>
           </div>
         </div>
-        <p className="text-xs text-stone-400">Select multiple files (Ctrl/Cmd+A in file picker). Accepts .docx, .pdf, or .txt</p>
+        <p className="text-xs text-stone-400">Select multiple files (Ctrl/Cmd+A in file picker). Accepts .doc, .docx, .pdf, .txt</p>
       </div>
 
       {/* Run log */}
