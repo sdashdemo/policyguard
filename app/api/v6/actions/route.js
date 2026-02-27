@@ -1,12 +1,9 @@
 import { db } from '@/lib/db';
 import { actionItems } from '@/lib/schema';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
+import { ulid } from '@/lib/ulid';
 
-function ulid() {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `action_${ts}_${rand}`;
-}
+export const dynamic = 'force-dynamic';
 
 export async function GET(req) {
   try {
@@ -35,12 +32,9 @@ export async function POST(req) {
       return Response.json({ error: 'Missing type or title' }, { status: 400 });
     }
 
-    const id = ulid();
+    const id = ulid('action');
     await db.insert(actionItems).values({
-      id,
-      org_id: 'ars',
-      type,
-      title,
+      id, org_id: 'ars', type, title,
       description: description || null,
       owner: owner || null,
       due_date: due_date || null,

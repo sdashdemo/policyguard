@@ -2,6 +2,8 @@ import { db } from '@/lib/db';
 import { appState } from '@/lib/schema';
 import { eq, and } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 const ORG_ID = 'ars';
 
 export async function GET(req) {

@@ -3,11 +3,11 @@ import { obligations, regSources } from '@/lib/schema';
 import { sql, eq } from 'drizzle-orm';
 import Anthropic from '@anthropic-ai/sdk';
 import { logAuditEvent, PROMPT_VERSIONS, MODEL_ID } from '@/lib/audit';
+import { ulid } from '@/lib/ulid';
+import { parseJSON } from '@/lib/parse';
 
+export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
-
-// Process one reg source per call. Frontend loops through sources.
-// Each source is chunked into ~40K char pieces to stay within context.
 
 const CHUNK_SIZE = 40000;
 const CHUNK_OVERLAP = 1000;
@@ -22,12 +22,6 @@ function chunkText(text, size = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
     start = end - overlap;
   }
   return chunks;
-}
-
-function ulid(prefix) {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `${prefix}_${ts}_${rand}`;
 }
 
 const EXTRACT_PROMPT = (sourceName, sourceType, citationRoot, chunkText, chunkIdx, totalChunks) => `You are a regulatory compliance expert for behavioral health facilities (substance use disorder and mental health treatment).
@@ -73,27 +67,7 @@ Return a JSON object (no other text, no markdown fences):
 
 Return ONLY the JSON object.`;
 
-function parseJSON(text) {
-  const start = text.indexOf('{');
-  if (start < 0) throw new Error('No JSON found in response');
-  let jsonStr = text.slice(start);
-  try { return JSON.parse(jsonStr); } catch {}
-  // Try truncated recovery
-  const lastComplete = jsonStr.lastIndexOf('},');
-  if (lastComplete > 0) {
-    jsonStr = jsonStr.slice(0, lastComplete + 1) + ']}';
-    try { return JSON.parse(jsonStr); } catch {}
-  }
-  const lastBrace = jsonStr.lastIndexOf('}');
-  if (lastBrace > 0) {
-    jsonStr = jsonStr.slice(0, lastBrace + 1) + ']}';
-    try { return JSON.parse(jsonStr); } catch {}
-  }
-  throw new Error('Could not parse extraction response');
-}
-
 export async function GET() {
-  // Return list of reg sources with extraction status
   try {
     const sources = await db.execute(sql`
       SELECT rs.id, rs.name, rs.state, rs.source_type, rs.citation_root,
@@ -136,12 +110,8 @@ export async function POST(req) {
       messages: [{
         role: 'user',
         content: EXTRACT_PROMPT(
-          source.name,
-          source.source_type,
-          source.citation_root,
-          chunks[idx],
-          idx,
-          chunks.length
+          source.name, source.source_type, source.citation_root,
+          chunks[idx], idx, chunks.length
         )
       }],
     });
@@ -150,16 +120,15 @@ export async function POST(req) {
     const reqs = parsed.requirements || [];
 
     let inserted = 0;
-    for (const req of reqs) {
+    for (const r of reqs) {
       try {
-        const id = ulid('obl');
         await db.insert(obligations).values({
-          id,
+          id: ulid('obl'),
           reg_source_id: source.id,
-          citation: req.citation || 'uncited',
-          requirement: req.requirement,
+          citation: r.citation || 'uncited',
+          requirement: r.requirement,
           source_type: source.source_type,
-          topics: [req.topic || 'other'],
+          topics: [r.topic || 'other'],
         });
         inserted++;
       } catch (err) {
@@ -181,14 +150,10 @@ export async function POST(req) {
     }
 
     return Response.json({
-      ok: true,
-      done: false,
-      source_id: source.id,
-      source_name: source.name,
-      chunk_index: idx,
-      total_chunks: chunks.length,
-      extracted: reqs.length,
-      inserted,
+      ok: true, done: false,
+      source_id: source.id, source_name: source.name,
+      chunk_index: idx, total_chunks: chunks.length,
+      extracted: reqs.length, inserted,
       next_chunk: idx + 1 < chunks.length ? idx + 1 : null,
     });
 

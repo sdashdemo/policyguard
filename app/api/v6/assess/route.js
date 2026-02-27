@@ -5,28 +5,16 @@ import { eq, sql } from 'drizzle-orm';
 import { findCandidatesHybrid, HIGH_RISK_TOPICS } from '@/lib/matching';
 import { ASSESS_PROMPT } from '@/lib/prompts';
 import { logAuditEvent, PROMPT_VERSIONS, MODEL_ID } from '@/lib/audit';
+import { ulid } from '@/lib/ulid';
+import { parseJSON } from '@/lib/parse';
 
+export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 const ORG_ID = 'ars';
 const MAX_RETRIES = 2;
 const VALID_STATUSES = ['COVERED', 'PARTIAL', 'GAP', 'CONFLICTING'];
 const VALID_CONFIDENCE = ['high', 'medium', 'low'];
-
-function ulid() {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `${ts}_${rand}`;
-}
-
-function parseJSON(text) {
-  const start = text.indexOf('{');
-  if (start < 0) throw new Error('No JSON found');
-  let jsonStr = text.slice(start);
-  const end = jsonStr.lastIndexOf('}');
-  if (end >= 0) jsonStr = jsonStr.slice(0, end + 1);
-  return JSON.parse(jsonStr);
-}
 
 function isHighRiskObligation(obligation) {
   const text = (obligation.requirement || '').toLowerCase();
@@ -68,7 +56,6 @@ function validateAssessment(parsed, candidatePolicies, obligation) {
   return { valid: errors.length === 0, errors, parsed };
 }
 
-// GET: return assessment progress
 export async function GET() {
   try {
     const result = await db.execute(sql`
@@ -89,14 +76,12 @@ export async function GET() {
   }
 }
 
-// POST: assess one obligation
 export async function POST(req) {
   try {
     const body = await req.json();
     const { map_run_id, facility_id } = body;
-    const runId = map_run_id || ulid();
+    const runId = map_run_id || ulid('run');
 
-    // Get next unassessed obligation
     const nextResult = await db.execute(sql`
       SELECT id FROM obligations
       WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments)
@@ -111,7 +96,6 @@ export async function POST(req) {
 
     const [obl] = await db.select().from(obligations).where(eq(obligations.id, nextRow.id));
 
-    // Load all policies and provisions (cached per call — not ideal but works)
     const allPolicies = await db.select().from(policies);
     const allProvisions = await db.select().from(provisions);
     const allLabels = await db.select().from(subDomainLabels);
@@ -122,11 +106,10 @@ export async function POST(req) {
       provsByPolicy[prov.policy_id].push(prov);
     }
 
-    // Hybrid matching
     const candidates = await findCandidatesHybrid(obl, allPolicies, allProvisions, allLabels);
 
     if (candidates.length === 0) {
-      const assessId = ulid();
+      const assessId = ulid('ca');
       await db.insert(coverageAssessments).values({
         id: assessId, org_id: ORG_ID, facility_id: facility_id || null,
         obligation_id: obl.id, policy_id: null, provision_id: null,
@@ -150,15 +133,11 @@ export async function POST(req) {
       });
     }
 
-    // Build candidate context for Claude
     const candidateContext = candidates.map(c => ({
-      policy_number: c.policy_number,
-      title: c.title,
-      score: c.score,
+      policy_number: c.policy_number, title: c.title, score: c.score,
       provisions: (provsByPolicy[c.policy_id] || []).slice(0, 15),
     }));
 
-    // Assess with retry
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     let assessment = null;
     let lastError = null;
@@ -202,7 +181,6 @@ export async function POST(req) {
       };
     }
 
-    // Resolve matched policy
     let matchedPolicyId = null;
     let matchScore = 0;
     let matchMethod = 'llm';
@@ -221,7 +199,7 @@ export async function POST(req) {
     let finalStatus = assessment.status;
     if (assessment._escalated) finalStatus = 'NEEDS_LEGAL_REVIEW';
 
-    const assessId = ulid();
+    const assessId = ulid('ca');
     await db.insert(coverageAssessments).values({
       id: assessId, org_id: ORG_ID, facility_id: facility_id || null,
       obligation_id: obl.id, policy_id: matchedPolicyId, provision_id: null,

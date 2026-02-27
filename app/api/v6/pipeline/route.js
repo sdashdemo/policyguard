@@ -1,6 +1,8 @@
 import { db } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const counts = await db.execute(sql`
@@ -19,10 +21,7 @@ export async function GET() {
         (SELECT count(*) FROM action_items) as action_items,
         (SELECT count(*) FROM audit_events) as audit_events
     `);
-
     const row = (counts.rows || counts)[0];
-
-    // Determine pipeline state
     const steps = [
       {
         id: 'upload_regs',
@@ -67,9 +66,7 @@ export async function GET() {
         detail: `${row.assessments} assessments (${row.reviewed} reviewed)`,
       },
     ];
-
     return Response.json({ steps, raw: row });
-
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
   }

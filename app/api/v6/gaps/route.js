@@ -1,6 +1,8 @@
 import { db } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
@@ -9,7 +11,6 @@ export async function GET(req) {
     const sourceId = searchParams.get('source_id');
     const humanReviewed = searchParams.get('human_reviewed');
 
-    // Fetch all obligation+assessment data, filter in JS for flexibility
     const results = await db.execute(sql`
       SELECT 
         o.id as obligation_id,
@@ -49,7 +50,6 @@ export async function GET(req) {
 
     let rows = results.rows || results || [];
 
-    // Apply filters in JS for simplicity
     if (status && status !== 'all') {
       if (status === 'UNASSESSED') {
         rows = rows.filter(r => !r.status);

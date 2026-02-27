@@ -5,14 +5,9 @@ import mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
 import Anthropic from '@anthropic-ai/sdk';
 import { logAuditEvent } from '@/lib/audit';
+import { ulid } from '@/lib/ulid';
 
 export const maxDuration = 120;
-
-function ulid(prefix) {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 10);
-  return `${prefix}_${ts}_${rand}`;
-}
 
 async function extractTextFromDocx(buffer) {
   const result = await mammoth.extractRawText({ buffer });

@@ -2,19 +2,18 @@ import { db } from '@/lib/db';
 import { facilityProfiles } from '@/lib/schema';
 import { eq, sql } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
 
     if (id) {
-      // Single facility with its obligations/assessments
       const facility = await db.select().from(facilityProfiles).where(eq(facilityProfiles.id, id));
       if (!facility.length) return Response.json({ error: 'Not found' }, { status: 404 });
 
       const state = facility[0].state;
-
-      // Get obligations applicable to this facility's state + federal + accreditor
       const oblResults = await db.execute(sql`
         SELECT 
           o.id, o.citation, o.requirement, o.source_type, o.topics, 
@@ -38,7 +37,6 @@ export async function GET(req) {
       });
     }
 
-    // List all facilities with coverage stats
     const results = await db.execute(sql`SELECT * FROM v_facility_coverage ORDER BY state, name`);
     return Response.json({ facilities: results.rows || results || [] });
 

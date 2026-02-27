@@ -1,19 +1,16 @@
 import { db } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
-    // Facility coverage summary
     const facilities = await db.execute(sql`
       SELECT * FROM v_facility_coverage ORDER BY state, name
     `);
-
-    // Source coverage summary
     const sources = await db.execute(sql`
       SELECT * FROM v_source_coverage ORDER BY state NULLS LAST, name
     `);
-
-    // Overall stats
     const stats = await db.execute(sql`
       SELECT
         (SELECT count(*) FROM obligations) as total_obligations,
@@ -26,7 +23,6 @@ export async function GET() {
         (SELECT count(*) FROM provisions) as total_provisions,
         (SELECT count(*) FROM reg_sources) as total_sources
     `);
-
     return Response.json({
       stats: stats.rows?.[0] || stats[0] || {},
       facilities: facilities.rows || facilities || [],
