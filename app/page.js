@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 // ─── CONSTANTS ──────────────────────────────────────────────
 
 const MODES = [
+  { id: 'pipeline', label: 'Pipeline', icon: '▶' },
   { id: 'dashboard', label: 'Dashboard', icon: '◫' },
   { id: 'facility', label: 'Facility View', icon: '⌂' },
   { id: 'regulations', label: 'Regulations', icon: '§' },
@@ -982,6 +983,280 @@ function ActionsMode() {
   );
 }
 
+// ─── PIPELINE MODE ──────────────────────────────────────────
+
+const REG_SOURCE_PRESETS = [
+  { name: '65D-30 (DCF SUD)', state: 'FL', source_type: 'state_reg', citation_root: '65D-30' },
+  { name: '65E-4 (AHCA MH RTF)', state: 'FL', source_type: 'state_reg', citation_root: '65E-4' },
+  { name: 'Ch. 397 (Marchman Act)', state: 'FL', source_type: 'state_reg', citation_root: 'Ch. 397' },
+  { name: 'TJC BHC Standards', state: null, source_type: 'tjc', citation_root: 'TJC' },
+  { name: '42 CFR Part 8 (OTP)', state: null, source_type: 'federal', citation_root: '42 CFR 8' },
+  { name: 'Other', state: null, source_type: 'state_reg', citation_root: '' },
+];
+
+function PipelineMode() {
+  const [steps, setSteps] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [running, setRunning] = useState(null);
+  const [runLog, setRunLog] = useState([]);
+  const [regPreset, setRegPreset] = useState(REG_SOURCE_PRESETS[0]);
+
+  const refreshPipeline = () => {
+    fetch('/api/v6/pipeline')
+      .then(r => r.json())
+      .then(d => { setSteps(d.steps || []); setLoading(false); })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => { refreshPipeline(); }, []);
+
+  const addLog = (msg) => setRunLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+
+  // ── Upload a single regulatory source ──
+  const handleRegUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    addLog(`Uploading regulatory source: ${file.name}`);
+
+    const form = new FormData();
+    form.append('file', file);
+    form.append('type', 'reg_source');
+    form.append('source_name', regPreset.name);
+    form.append('state', regPreset.state || '');
+    form.append('source_type', regPreset.source_type);
+    form.append('citation_root', regPreset.citation_root);
+
+    try {
+      const res = await fetch('/api/v6/upload', { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.ok) {
+        addLog(`✓ Uploaded ${file.name} — ${data.text_length.toLocaleString()} chars extracted`);
+      } else {
+        addLog(`✗ Error: ${data.error}`);
+      }
+    } catch (err) {
+      addLog(`✗ Upload failed: ${err.message}`);
+    }
+    e.target.value = '';
+    setUploading(false);
+    refreshPipeline();
+  };
+
+  // ── Batch upload policies ──
+  const handlePolicyUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setUploading(true);
+    addLog(`Uploading ${files.length} policy files...`);
+
+    // Upload in batches of 10
+    let uploaded = 0;
+    let errors = 0;
+    for (let i = 0; i < files.length; i += 10) {
+      const batch = files.slice(i, i + 10);
+      const form = new FormData();
+      batch.forEach(f => form.append('files', f));
+
+      try {
+        const res = await fetch('/api/v6/upload', { method: 'PUT', body: form });
+        const data = await res.json();
+        uploaded += data.uploaded || 0;
+        errors += data.errors || 0;
+        setUploadProgress(`${uploaded}/${files.length} uploaded`);
+        if (data.errors_detail?.length) {
+          data.errors_detail.forEach(e => addLog(`  ✗ ${e.filename}: ${e.error}`));
+        }
+      } catch (err) {
+        addLog(`  ✗ Batch error: ${err.message}`);
+        errors += batch.length;
+      }
+    }
+
+    addLog(`✓ Policy upload complete: ${uploaded} uploaded, ${errors} errors`);
+    e.target.value = '';
+    setUploading(false);
+    setUploadProgress(null);
+    refreshPipeline();
+  };
+
+  // ── Run pipeline step ──
+  const runStep = async (stepId) => {
+    setRunning(stepId);
+
+    if (stepId === 'extract_obligations') {
+      addLog('Starting obligation extraction from regulatory sources...');
+      try {
+        const res = await fetch('/api/extract-requirements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: 'all' }),
+        });
+        const data = await res.json();
+        addLog(`✓ Extracted ${data.total_requirements || data.total || '?'} obligations`);
+      } catch (err) {
+        addLog(`✗ Extraction error: ${err.message}`);
+      }
+    }
+
+    if (stepId === 'index_policies') {
+      addLog('Starting policy indexing (this takes a while for 370+ policies)...');
+      try {
+        const res = await fetch('/api/index-policy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: 'unindexed' }),
+        });
+        const data = await res.json();
+        addLog(`✓ Indexed ${data.indexed || data.total || '?'} policies`);
+      } catch (err) {
+        addLog(`✗ Indexing error: ${err.message}`);
+      }
+    }
+
+    if (stepId === 'embed') {
+      addLog('Generating embeddings (Voyage AI)...');
+      let remaining = 999;
+      let rounds = 0;
+      while (remaining > 0 && rounds < 50) {
+        try {
+          const res = await fetch('/api/v6/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: 'all' }),
+          });
+          const data = await res.json();
+          remaining = Number(data.remaining?.obls_remaining || 0) + Number(data.remaining?.provs_remaining || 0);
+          addLog(`  Embedded batch — ${remaining} remaining`);
+          rounds++;
+        } catch (err) {
+          addLog(`✗ Embedding error: ${err.message}`);
+          break;
+        }
+      }
+      addLog(`✓ Embedding complete after ${rounds} batches`);
+    }
+
+    if (stepId === 'assess') {
+      addLog('Running coverage assessments (Claude + hybrid matching)...');
+      try {
+        const res = await fetch('/api/map-coverage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: 'unassessed', state: 'FL' }),
+        });
+        const data = await res.json();
+        addLog(`✓ Assessment complete: ${data.total || '?'} obligations assessed`);
+      } catch (err) {
+        addLog(`✗ Assessment error: ${err.message}`);
+      }
+    }
+
+    setRunning(null);
+    refreshPipeline();
+  };
+
+  if (loading) return <Spinner />;
+
+  const stepColors = {
+    done: 'bg-emerald-500',
+    ready: 'bg-amber-400',
+    blocked: 'bg-stone-300',
+    pending: 'bg-stone-300',
+  };
+
+  return (
+    <div className="page-enter space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold">Pipeline</h1>
+        <p className="text-sm text-stone-500">Upload documents and run the assessment pipeline step by step</p>
+      </div>
+
+      {/* Pipeline status */}
+      <div className="card p-4 space-y-3">
+        <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Pipeline Status</p>
+        {steps.map(step => (
+          <div key={step.id} className="flex items-center gap-3">
+            <div className={`w-2.5 h-2.5 rounded-full ${stepColors[step.status]}`} />
+            <div className="flex-1">
+              <p className="text-sm font-medium">{step.label}</p>
+              <p className="text-xs text-stone-400">{step.detail}</p>
+            </div>
+            {(step.status === 'ready' || step.status === 'done') && step.id !== 'upload_regs' && step.id !== 'upload_policies' && (
+              <button
+                onClick={() => runStep(step.id)}
+                disabled={running !== null}
+                className="text-xs px-3 py-1 bg-stone-900 text-white rounded hover:bg-stone-800 disabled:opacity-50"
+              >
+                {running === step.id ? 'Running...' : step.status === 'done' ? 'Re-run' : 'Run'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Upload: Regulatory Sources */}
+      <div className="card p-4 space-y-3">
+        <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Regulatory Source</p>
+        <div className="flex items-end gap-3">
+          <div className="flex-1">
+            <label className="text-xs text-stone-500 block mb-1">Source type</label>
+            <select
+              value={regPreset.name}
+              onChange={(e) => setRegPreset(REG_SOURCE_PRESETS.find(p => p.name === e.target.value) || REG_SOURCE_PRESETS[0])}
+              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5 bg-white"
+            >
+              {REG_SOURCE_PRESETS.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
+              {uploading ? 'Uploading...' : 'Choose File'}
+              <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
+            </label>
+          </div>
+        </div>
+        <p className="text-xs text-stone-400">Accepts .docx, .pdf, or .txt — one regulatory source at a time</p>
+      </div>
+
+      {/* Upload: Policies */}
+      <div className="card p-4 space-y-3">
+        <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Policy Documents</p>
+        <div className="flex items-end gap-3">
+          <div className="flex-1">
+            <p className="text-sm">Select all policy Word docs at once — they'll be uploaded in batches of 10</p>
+            {uploadProgress && <p className="text-xs text-amber-600 mt-1">{uploadProgress}</p>}
+          </div>
+          <div>
+            <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
+              {uploading ? 'Uploading...' : 'Choose Files'}
+              <input type="file" accept=".docx,.doc,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploading} className="hidden" />
+            </label>
+          </div>
+        </div>
+        <p className="text-xs text-stone-400">Select multiple files (Ctrl/Cmd+A in file picker). Accepts .docx, .pdf, or .txt</p>
+      </div>
+
+      {/* Run log */}
+      {runLog.length > 0 && (
+        <div className="card p-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Activity Log</p>
+            <button onClick={() => setRunLog([])} className="text-xs text-stone-400 hover:text-stone-600">Clear</button>
+          </div>
+          <div className="bg-stone-950 text-stone-300 rounded p-3 max-h-[300px] overflow-y-auto font-mono text-xs space-y-0.5">
+            {runLog.map((line, i) => (
+              <div key={i} className={line.includes('✗') ? 'text-red-400' : line.includes('✓') ? 'text-emerald-400' : ''}>{line}</div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── CSV EXPORT ─────────────────────────────────────────────
 
 function exportCSV(rows) {
@@ -1055,6 +1330,7 @@ export default function PolicyGuard() {
       {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto p-6">
+          {mode === 'pipeline' && <PipelineMode />}
           {mode === 'dashboard' && <DashboardMode data={dashboardData} onNavigate={navigate} />}
           {mode === 'facility' && <FacilityViewMode facilityId={selectedFacility} onNavigate={navigate} />}
           {mode === 'regulations' && <RegulationsMode onNavigate={navigate} />}
