@@ -1182,15 +1182,46 @@ function PipelineMode({ running, setRunning, runLog, setRunLog, addLog }) {
     }
 
     if (stepId === 'assess') {
-      addLog('Running coverage assessments (Claude + hybrid matching)...');
+      addLog('Starting coverage assessment (hybrid matching + Claude)...');
       try {
-        const res = await fetch('/api/map-coverage', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scope: 'unassessed', state: 'FL' }),
-        });
-        const data = await res.json();
-        addLog(`✓ Assessment complete: ${data.total || '?'} obligations assessed`);
+        // Get initial stats
+        const statsRes = await fetch('/api/v6/assess');
+        const stats = await statsRes.json();
+        addLog(`${stats.total_obligations} obligations total, ${stats.unassessed} unassessed`);
+
+        let done = false;
+        let runId = null;
+        let totalAssessed = 0;
+        const statusCounts = { COVERED: 0, PARTIAL: 0, GAP: 0, CONFLICTING: 0, NEEDS_LEGAL_REVIEW: 0 };
+
+        while (!done) {
+          try {
+            const res = await fetch('/api/v6/assess', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ map_run_id: runId }),
+            });
+            const data = await res.json();
+            if (!data.ok) {
+              addLog(`  ✗ Error: ${data.error}`);
+              break;
+            }
+            if (data.done) {
+              done = true;
+            } else {
+              if (!runId) runId = data.map_run_id;
+              totalAssessed++;
+              statusCounts[data.status] = (statusCounts[data.status] || 0) + 1;
+              const policyInfo = data.covering_policy ? ` → ${data.covering_policy}` : '';
+              addLog(`  ${data.status === 'COVERED' ? '✓' : data.status === 'GAP' ? '✗' : '◐'} ${data.citation}: ${data.status}${policyInfo} (${data.candidates} candidates) [${data.remaining} left]`);
+            }
+          } catch (err) {
+            addLog(`  ✗ Error: ${err.message}`);
+            break;
+          }
+        }
+        addLog(`✓ Assessment complete: ${totalAssessed} assessed`);
+        addLog(`  COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | CONFLICTING: ${statusCounts.CONFLICTING} | NEEDS REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW}`);
       } catch (err) {
         addLog(`✗ Assessment error: ${err.message}`);
       }
