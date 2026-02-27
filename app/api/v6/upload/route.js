@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
 import { regSources, policies } from '@/lib/schema';
 import { eq } from 'drizzle-orm';
 import mammoth from 'mammoth';
+import Anthropic from '@anthropic-ai/sdk';
 import { logAuditEvent } from '@/lib/audit';
 
 export const maxDuration = 120;
@@ -18,7 +19,6 @@ async function extractTextFromDocx(buffer) {
 }
 
 async function extractTextFromPdf(buffer) {
-  // Basic text extraction - pdfjsLib in node
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
@@ -31,8 +31,34 @@ async function extractTextFromPdf(buffer) {
     }
     return pages.join('\n\n');
   } catch (err) {
-    // Fallback: return error message
     throw new Error(`PDF extraction failed: ${err.message}`);
+  }
+}
+
+async function classifySource(text, filename) {
+  try {
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const sample = text.slice(0, 4000);
+    const message = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: `Analyze this regulatory/standards document and classify it. Based on the text below, return a JSON object (no other text, no markdown fences):
+
+{
+  "name": "Short descriptive name (e.g., '65D-30 — DCF Substance Abuse Services', 'TJC BHC Standards', '42 CFR Part 8 — OTP Requirements')",
+  "state": "Two-letter state code if state-specific, or null if federal/national",
+  "source_type": "One of: State Regulation, Federal Regulation, Accreditation Standards, Statute, Guidelines",
+  "citation_root": "The citation prefix used throughout (e.g., '65D-30', '65E-4', 'TJC', '42 CFR 8', 'Ch. 397')"
+}
+
+FILENAME: ${filename}
+
+TEXT SAMPLE:
+${sample}` }],
+    });
+    return JSON.parse(message.content[0].text.replace(/```json|```/g, '').trim());
+  } catch (err) {
+    return null;
   }
 }
 
@@ -41,12 +67,12 @@ export async function POST(req) {
     const formData = await req.formData();
     const file = formData.get('file');
     const type = formData.get('type'); // 'reg_source' or 'policy'
-    
-    // Reg source metadata
-    const sourceName = formData.get('source_name') || file.name;
-    const sourceState = formData.get('state') || null;
-    const sourceType = formData.get('source_type') || 'state_reg'; // state_reg, tjc, federal
-    const citationRoot = formData.get('citation_root') || null;
+
+    // Manual overrides (optional — used if user edits the auto-detected fields)
+    const manualName = formData.get('source_name');
+    const manualState = formData.get('state');
+    const manualSourceType = formData.get('source_type');
+    const manualCitationRoot = formData.get('citation_root');
 
     if (!file) {
       return Response.json({ error: 'No file provided' }, { status: 400 });
@@ -54,17 +80,24 @@ export async function POST(req) {
 
     const filename = file.name;
     const buffer = Buffer.from(await file.arrayBuffer());
-    
-    // Extract text based on file type
+
+    // Check for .doc (old format)
+    if (filename.endsWith('.doc') && !filename.endsWith('.docx')) {
+      return Response.json({
+        error: 'Old .doc format is not supported. Please save the file as .docx (File → Save As → Word Document .docx) or export as PDF, then re-upload.'
+      }, { status: 400 });
+    }
+
+    // Extract text
     let fullText;
-    if (filename.endsWith('.docx') || filename.endsWith('.doc')) {
+    if (filename.endsWith('.docx')) {
       fullText = await extractTextFromDocx(buffer);
     } else if (filename.endsWith('.pdf')) {
       fullText = await extractTextFromPdf(buffer);
     } else if (filename.endsWith('.txt')) {
       fullText = buffer.toString('utf-8');
     } else {
-      return Response.json({ error: `Unsupported file type: ${filename}` }, { status: 400 });
+      return Response.json({ error: `Unsupported file type: ${filename}. Use .docx, .pdf, or .txt` }, { status: 400 });
     }
 
     if (!fullText || fullText.trim().length < 50) {
@@ -72,6 +105,17 @@ export async function POST(req) {
     }
 
     if (type === 'reg_source') {
+      // Auto-classify with Claude unless manual fields provided
+      let classification = null;
+      if (!manualName) {
+        classification = await classifySource(fullText, filename);
+      }
+
+      const sourceName = manualName || classification?.name || filename;
+      const sourceState = manualState || classification?.state || null;
+      const sourceType = manualSourceType || classification?.source_type || 'State Regulation';
+      const citationRoot = manualCitationRoot || classification?.citation_root || null;
+
       const id = ulid('rs');
       await db.insert(regSources).values({
         id,
@@ -90,7 +134,7 @@ export async function POST(req) {
         entity_id: id,
         actor: 'clo',
         input_summary: `Uploaded: ${filename}`,
-        output_summary: `${fullText.length} chars extracted`,
+        output_summary: `${fullText.length} chars | auto-classified: ${sourceName} (${sourceState || 'federal'})`,
       });
 
       return Response.json({
@@ -99,6 +143,13 @@ export async function POST(req) {
         type: 'reg_source',
         filename,
         text_length: fullText.length,
+        classified: {
+          name: sourceName,
+          state: sourceState,
+          source_type: sourceType,
+          citation_root: citationRoot,
+          auto: !manualName,
+        },
         preview: fullText.slice(0, 500),
       });
 

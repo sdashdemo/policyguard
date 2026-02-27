@@ -985,8 +985,6 @@ function ActionsMode() {
 
 // ─── PIPELINE MODE ──────────────────────────────────────────
 
-const SOURCE_TYPES = ['state_reg', 'tjc', 'federal', 'guidelines'];
-
 function PipelineMode() {
   const [steps, setSteps] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -994,7 +992,6 @@ function PipelineMode() {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [running, setRunning] = useState(null);
   const [runLog, setRunLog] = useState([]);
-  const [regFields, setRegFields] = useState({ name: '', state: '', source_type: 'state_reg', citation_root: '' });
 
   const refreshPipeline = () => {
     fetch('/api/v6/pipeline')
@@ -1017,16 +1014,14 @@ function PipelineMode() {
     const form = new FormData();
     form.append('file', file);
     form.append('type', 'reg_source');
-    form.append('source_name', regFields.name || file.name);
-    form.append('state', regFields.state || '');
-    form.append('source_type', regFields.source_type);
-    form.append('citation_root', regFields.citation_root || '');
 
     try {
       const res = await fetch('/api/v6/upload', { method: 'POST', body: form });
       const data = await res.json();
       if (data.ok) {
-        addLog(`✓ Uploaded ${file.name} — ${data.text_length.toLocaleString()} chars extracted`);
+        const c = data.classified;
+        addLog(`✓ Uploaded ${file.name} — ${data.text_length.toLocaleString()} chars`);
+        addLog(`  Auto-classified: "${c.name}" | ${c.state || 'Federal/National'} | ${c.source_type} | Citation: ${c.citation_root || '—'}`);
       } else {
         addLog(`✗ Error: ${data.error}`);
       }
@@ -1193,54 +1188,13 @@ function PipelineMode() {
       {/* Upload: Regulatory Sources */}
       <div className="card p-4 space-y-3">
         <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Regulatory Source</p>
-        <div className="grid grid-cols-4 gap-3">
-          <div>
-            <label className="text-xs text-stone-500 block mb-1">Source name</label>
-            <input
-              type="text"
-              placeholder="e.g. 65D-30 (DCF SUD)"
-              value={regFields.name}
-              onChange={(e) => setRegFields(prev => ({ ...prev, name: e.target.value }))}
-              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-stone-500 block mb-1">State</label>
-            <input
-              type="text"
-              placeholder="e.g. FL (blank for federal/TJC)"
-              value={regFields.state}
-              onChange={(e) => setRegFields(prev => ({ ...prev, state: e.target.value.toUpperCase() }))}
-              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-stone-500 block mb-1">Type</label>
-            <select
-              value={regFields.source_type}
-              onChange={(e) => setRegFields(prev => ({ ...prev, source_type: e.target.value }))}
-              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5 bg-white"
-            >
-              {SOURCE_TYPES.map(t => <option key={t} value={t}>{t.replace('_', ' ')}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-stone-500 block mb-1">Citation root</label>
-            <input
-              type="text"
-              placeholder="e.g. 65D-30"
-              value={regFields.citation_root}
-              onChange={(e) => setRegFields(prev => ({ ...prev, citation_root: e.target.value }))}
-              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5"
-            />
-          </div>
-        </div>
+        <p className="text-sm text-stone-600">Pick a file — Claude will auto-detect the source name, state, type, and citation root</p>
         <div className="flex items-center gap-3">
           <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
-            {uploading ? 'Uploading...' : 'Choose File'}
-            <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
+            {uploading ? 'Uploading & classifying...' : 'Choose File'}
+            <input type="file" accept=".docx,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
           </label>
-          <p className="text-xs text-stone-400">Accepts .docx, .pdf, or .txt — one regulatory source at a time</p>
+          <p className="text-xs text-stone-400">.docx, .pdf, or .txt — one at a time. Old .doc format not supported (save as .docx first).</p>
         </div>
       </div>
 
@@ -1255,7 +1209,7 @@ function PipelineMode() {
           <div>
             <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
               {uploading ? 'Uploading...' : 'Choose Files'}
-              <input type="file" accept=".docx,.doc,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploading} className="hidden" />
+              <input type="file" accept=".docx,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploading} className="hidden" />
             </label>
           </div>
         </div>
