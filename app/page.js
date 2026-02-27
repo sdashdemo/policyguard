@@ -985,14 +985,7 @@ function ActionsMode() {
 
 // ─── PIPELINE MODE ──────────────────────────────────────────
 
-const REG_SOURCE_PRESETS = [
-  { name: '65D-30 (DCF SUD)', state: 'FL', source_type: 'state_reg', citation_root: '65D-30' },
-  { name: '65E-4 (AHCA MH RTF)', state: 'FL', source_type: 'state_reg', citation_root: '65E-4' },
-  { name: 'Ch. 397 (Marchman Act)', state: 'FL', source_type: 'state_reg', citation_root: 'Ch. 397' },
-  { name: 'TJC BHC Standards', state: null, source_type: 'tjc', citation_root: 'TJC' },
-  { name: '42 CFR Part 8 (OTP)', state: null, source_type: 'federal', citation_root: '42 CFR 8' },
-  { name: 'Other', state: null, source_type: 'state_reg', citation_root: '' },
-];
+const SOURCE_TYPES = ['state_reg', 'tjc', 'federal', 'guidelines'];
 
 function PipelineMode() {
   const [steps, setSteps] = useState([]);
@@ -1001,7 +994,7 @@ function PipelineMode() {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [running, setRunning] = useState(null);
   const [runLog, setRunLog] = useState([]);
-  const [regPreset, setRegPreset] = useState(REG_SOURCE_PRESETS[0]);
+  const [regFields, setRegFields] = useState({ name: '', state: '', source_type: 'state_reg', citation_root: '' });
 
   const refreshPipeline = () => {
     fetch('/api/v6/pipeline')
@@ -1024,10 +1017,10 @@ function PipelineMode() {
     const form = new FormData();
     form.append('file', file);
     form.append('type', 'reg_source');
-    form.append('source_name', regPreset.name);
-    form.append('state', regPreset.state || '');
-    form.append('source_type', regPreset.source_type);
-    form.append('citation_root', regPreset.citation_root);
+    form.append('source_name', regFields.name || file.name);
+    form.append('state', regFields.state || '');
+    form.append('source_type', regFields.source_type);
+    form.append('citation_root', regFields.citation_root || '');
 
     try {
       const res = await fetch('/api/v6/upload', { method: 'POST', body: form });
@@ -1052,11 +1045,11 @@ function PipelineMode() {
     setUploading(true);
     addLog(`Uploading ${files.length} policy files...`);
 
-    // Upload in batches of 10
+    // Upload in batches of 50
     let uploaded = 0;
     let errors = 0;
-    for (let i = 0; i < files.length; i += 10) {
-      const batch = files.slice(i, i + 10);
+    for (let i = 0; i < files.length; i += 50) {
+      const batch = files.slice(i, i + 50);
       const form = new FormData();
       batch.forEach(f => form.append('files', f));
 
@@ -1200,25 +1193,55 @@ function PipelineMode() {
       {/* Upload: Regulatory Sources */}
       <div className="card p-4 space-y-3">
         <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Regulatory Source</p>
-        <div className="flex items-end gap-3">
-          <div className="flex-1">
-            <label className="text-xs text-stone-500 block mb-1">Source type</label>
+        <div className="grid grid-cols-4 gap-3">
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Source name</label>
+            <input
+              type="text"
+              placeholder="e.g. 65D-30 (DCF SUD)"
+              value={regFields.name}
+              onChange={(e) => setRegFields(prev => ({ ...prev, name: e.target.value }))}
+              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">State</label>
+            <input
+              type="text"
+              placeholder="e.g. FL (blank for federal/TJC)"
+              value={regFields.state}
+              onChange={(e) => setRegFields(prev => ({ ...prev, state: e.target.value.toUpperCase() }))}
+              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Type</label>
             <select
-              value={regPreset.name}
-              onChange={(e) => setRegPreset(REG_SOURCE_PRESETS.find(p => p.name === e.target.value) || REG_SOURCE_PRESETS[0])}
+              value={regFields.source_type}
+              onChange={(e) => setRegFields(prev => ({ ...prev, source_type: e.target.value }))}
               className="w-full text-sm border border-stone-200 rounded px-2 py-1.5 bg-white"
             >
-              {REG_SOURCE_PRESETS.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+              {SOURCE_TYPES.map(t => <option key={t} value={t}>{t.replace('_', ' ')}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
-              {uploading ? 'Uploading...' : 'Choose File'}
-              <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
-            </label>
+            <label className="text-xs text-stone-500 block mb-1">Citation root</label>
+            <input
+              type="text"
+              placeholder="e.g. 65D-30"
+              value={regFields.citation_root}
+              onChange={(e) => setRegFields(prev => ({ ...prev, citation_root: e.target.value }))}
+              className="w-full text-sm border border-stone-200 rounded px-2 py-1.5"
+            />
           </div>
         </div>
-        <p className="text-xs text-stone-400">Accepts .docx, .pdf, or .txt — one regulatory source at a time</p>
+        <div className="flex items-center gap-3">
+          <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
+            {uploading ? 'Uploading...' : 'Choose File'}
+            <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
+          </label>
+          <p className="text-xs text-stone-400">Accepts .docx, .pdf, or .txt — one regulatory source at a time</p>
+        </div>
       </div>
 
       {/* Upload: Policies */}
@@ -1226,7 +1249,7 @@ function PipelineMode() {
         <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Policy Documents</p>
         <div className="flex items-end gap-3">
           <div className="flex-1">
-            <p className="text-sm">Select all policy Word docs at once — they'll be uploaded in batches of 10</p>
+            <p className="text-sm">Select all policy Word docs at once — they'll be uploaded in batches of 50</p>
             {uploadProgress && <p className="text-xs text-amber-600 mt-1">{uploadProgress}</p>}
           </div>
           <div>
