@@ -98,7 +98,7 @@ export async function GET() {
     const sources = await db.execute(sql`
       SELECT rs.id, rs.name, rs.state, rs.source_type, rs.citation_root,
         LENGTH(rs.full_text) as text_length,
-        (SELECT count(*) FROM obligations o WHERE o.source_id = rs.id) as obligation_count
+        (SELECT count(*) FROM obligations o WHERE o.reg_source_id = rs.id) as obligation_count
       FROM reg_sources rs
       ORDER BY rs.name
     `);
