@@ -988,7 +988,8 @@ function ActionsMode() {
 function PipelineMode() {
   const [steps, setSteps] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
+  const [uploadingReg, setUploadingReg] = useState(false);
+  const [uploadingPolicies, setUploadingPolicies] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [running, setRunning] = useState(null);
   const [runLog, setRunLog] = useState([]);
@@ -1008,7 +1009,7 @@ function PipelineMode() {
   const handleRegUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploading(true);
+    setUploadingReg(true);
     addLog(`Uploading regulatory source: ${file.name}`);
 
     const form = new FormData();
@@ -1029,7 +1030,7 @@ function PipelineMode() {
       addLog(`✗ Upload failed: ${err.message}`);
     }
     e.target.value = '';
-    setUploading(false);
+    setUploadingReg(false);
     refreshPipeline();
   };
 
@@ -1037,7 +1038,7 @@ function PipelineMode() {
   const handlePolicyUpload = async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    setUploading(true);
+    setUploadingPolicies(true);
     addLog(`Uploading ${files.length} policy files...`);
 
     // Upload in batches of 50
@@ -1066,7 +1067,7 @@ function PipelineMode() {
 
     addLog(`✓ Policy upload complete: ${uploaded} uploaded, ${errors} errors`);
     e.target.value = '';
-    setUploading(false);
+    setUploadingPolicies(false);
     setUploadProgress(null);
     refreshPipeline();
   };
@@ -1192,8 +1193,8 @@ function PipelineMode() {
         <p className="text-sm text-stone-600">Pick a file — Claude will auto-detect the source name, state, type, and citation root</p>
         <div className="flex items-center gap-3">
           <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
-            {uploading ? 'Uploading & classifying...' : 'Choose File'}
-            <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploading} className="hidden" />
+            {uploadingReg ? 'Uploading & classifying...' : 'Choose File'}
+            <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploadingReg} className="hidden" />
           </label>
           <p className="text-xs text-stone-400">.doc, .docx, .pdf, or .txt — one at a time</p>
         </div>
@@ -1209,8 +1210,8 @@ function PipelineMode() {
           </div>
           <div>
             <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
-              {uploading ? 'Uploading...' : 'Choose Files'}
-              <input type="file" accept=".docx,.doc,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploading} className="hidden" />
+              {uploadingPolicies ? 'Uploading...' : 'Choose Files'}
+              <input type="file" accept=".docx,.doc,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploadingPolicies} className="hidden" />
             </label>
           </div>
         </div>
