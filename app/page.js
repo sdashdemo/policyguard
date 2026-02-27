@@ -985,14 +985,12 @@ function ActionsMode() {
 
 // ─── PIPELINE MODE ──────────────────────────────────────────
 
-function PipelineMode() {
+function PipelineMode({ running, setRunning, runLog, setRunLog, addLog }) {
   const [steps, setSteps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploadingReg, setUploadingReg] = useState(false);
   const [uploadingPolicies, setUploadingPolicies] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
-  const [running, setRunning] = useState(null);
-  const [runLog, setRunLog] = useState([]);
 
   const refreshPipeline = () => {
     fetch('/api/v6/pipeline')
@@ -1002,8 +1000,6 @@ function PipelineMode() {
   };
 
   useEffect(() => { refreshPipeline(); }, []);
-
-  const addLog = (msg) => setRunLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
 
   // ── Upload a single regulatory source ──
   const handleRegUpload = async (e) => {
@@ -1313,6 +1309,11 @@ export default function PolicyGuard() {
   const [selectedFacility, setSelectedFacility] = useState(null);
   const [dashboardData, setDashboardData] = useState(null);
 
+  // Pipeline state — lives here so it persists across mode switches
+  const [pipelineRunning, setPipelineRunning] = useState(null);
+  const [pipelineLog, setPipelineLog] = useState([]);
+  const pipelineAddLog = (msg) => setPipelineLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+
   useEffect(() => {
     fetch('/api/v6/dashboard')
       .then(r => r.json())
@@ -1353,6 +1354,9 @@ export default function PolicyGuard() {
             >
               <span className="w-5 text-center opacity-60">{m.icon}</span>
               {m.label}
+              {m.id === 'pipeline' && pipelineRunning && (
+                <span className="ml-auto w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              )}
             </button>
           ))}
         </div>
@@ -1365,7 +1369,7 @@ export default function PolicyGuard() {
       {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto p-6">
-          {mode === 'pipeline' && <PipelineMode />}
+          {mode === 'pipeline' && <PipelineMode running={pipelineRunning} setRunning={setPipelineRunning} runLog={pipelineLog} setRunLog={setPipelineLog} addLog={pipelineAddLog} />}
           {mode === 'dashboard' && <DashboardMode data={dashboardData} onNavigate={navigate} />}
           {mode === 'facility' && <FacilityViewMode facilityId={selectedFacility} onNavigate={navigate} />}
           {mode === 'regulations' && <RegulationsMode onNavigate={navigate} />}
