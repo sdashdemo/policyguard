@@ -1,6 +1,8 @@
 import { db } from '@/lib/db';
 import { sql } from 'drizzle-orm';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const counts = await db.execute(sql`
