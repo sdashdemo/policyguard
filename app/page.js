@@ -1077,15 +1077,39 @@ function PipelineMode() {
     setRunning(stepId);
 
     if (stepId === 'extract_obligations') {
-      addLog('Starting obligation extraction from regulatory sources...');
+      addLog('Fetching regulatory source list...');
       try {
-        const res = await fetch('/api/extract-requirements', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scope: 'all' }),
-        });
-        const data = await res.json();
-        addLog(`✓ Extracted ${data.total_requirements || data.total || '?'} obligations`);
+        const listRes = await fetch('/api/v6/extract');
+        const listData = await listRes.json();
+        const sources = listData.sources || [];
+        addLog(`Found ${sources.length} sources to extract from`);
+
+        for (const src of sources) {
+          if (Number(src.obligation_count) > 0) {
+            addLog(`  ⏭ ${src.name} — already has ${src.obligation_count} obligations, skipping`);
+            continue;
+          }
+          addLog(`  ⏳ Extracting from: ${src.name} (${Number(src.text_length).toLocaleString()} chars)...`);
+          try {
+            const res = await fetch('/api/v6/extract', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ source_id: src.id }),
+            });
+            const data = await res.json();
+            if (data.ok) {
+              addLog(`  ✓ ${src.name}: ${data.chunks_processed} chunks → ${data.raw_extracted} raw → ${data.deduped} deduped → ${data.inserted} inserted`);
+              if (data.chunk_errors?.length) {
+                data.chunk_errors.forEach(e => addLog(`    ⚠ Chunk ${e.chunk}: ${e.error}`));
+              }
+            } else {
+              addLog(`  ✗ ${src.name}: ${data.error}`);
+            }
+          } catch (err) {
+            addLog(`  ✗ ${src.name}: ${err.message}`);
+          }
+        }
+        addLog('✓ Extraction complete');
       } catch (err) {
         addLog(`✗ Extraction error: ${err.message}`);
       }
