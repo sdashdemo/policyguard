@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
 import { Badge, CoverageBar, Spinner, EmptyState } from './shared';
 
-// Natural sort: "CL-1.001" before "CL-10.001"
+// Natural sort: handles "CL1.007", "CL-1.001", "CL 6.005" variations
 function naturalSort(a, b) {
-  const pa = (a.policy_number || '').split(/(\d+)/);
-  const pb = (b.policy_number || '').split(/(\d+)/);
+  const normalize = (s) => (s || '').replace(/[-\s]+/g, '').toUpperCase();
+  const na = normalize(a.policy_number);
+  const nb = normalize(b.policy_number);
+  const pa = na.split(/(\d+)/);
+  const pb = nb.split(/(\d+)/);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const ca = pa[i] || '', cb = pb[i] || '';
-    const na = parseInt(ca, 10), nb = parseInt(cb, 10);
-    if (!isNaN(na) && !isNaN(nb)) {
-      if (na !== nb) return na - nb;
+    const ia = parseInt(ca, 10), ib = parseInt(cb, 10);
+    if (!isNaN(ia) && !isNaN(ib)) {
+      if (ia !== ib) return ia - ib;
     } else {
       const cmp = ca.localeCompare(cb);
       if (cmp !== 0) return cmp;

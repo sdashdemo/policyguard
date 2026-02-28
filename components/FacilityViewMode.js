@@ -83,8 +83,8 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
                 const assessed = covered + partial + gaps;
                 return (
                   <button
-                    key={f.id}
-                    onClick={() => setLocalFacilityId(f.id)}
+                    key={f.facility_id || f.id}
+                    onClick={() => setLocalFacilityId(f.facility_id || f.id)}
                     className="w-full px-4 py-3 row-hover text-left flex items-center gap-4"
                   >
                     <div className="flex-1 min-w-0">

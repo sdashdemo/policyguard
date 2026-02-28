@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { MODES } from '@/components/shared';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import DashboardMode from '@/components/DashboardMode';
 import FacilityViewMode from '@/components/FacilityViewMode';
 import GapReportMode from '@/components/GapReportMode';
@@ -76,6 +77,7 @@ export default function PolicyGuard() {
       {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto p-6">
+          <ErrorBoundary key={mode}>
           {mode === 'pipeline' && <PipelineMode running={pipelineRunning} setRunning={setPipelineRunning} runLog={pipelineLog} setRunLog={setPipelineLog} addLog={pipelineAddLog} />}
           {mode === 'dashboard' && <DashboardMode data={dashboardData} onNavigate={navigate} />}
           {mode === 'facility' && <FacilityViewMode facilityId={selectedFacility} onNavigate={navigate} />}
@@ -85,6 +87,7 @@ export default function PolicyGuard() {
           {mode === 'actions' && <ActionsMode />}
           {mode === 'facilities' && <FacilityMatrixMode />}
           {mode === 'policies' && <PoliciesMode />}
+          </ErrorBoundary>
         </div>
       </main>
     </div>
