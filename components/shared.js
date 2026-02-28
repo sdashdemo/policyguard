@@ -93,7 +93,7 @@ export function FilterPill({ active, label, onClick }) {
 }
 
 export function exportCSV(rows) {
-  const headers = ['citation', 'requirement', 'status', 'confidence', 'gap_detail', 'recommended_policy', 'policy_number', 'source_name', 'source_state'];
+  const headers = ['citation', 'requirement', 'status', 'confidence', 'risk_tier', 'gap_detail', 'recommended_policy', 'policy_number', 'source_name', 'source_state'];
   const csv = [
     headers.join(','),
     ...rows.map(r => headers.map(h => `"${String(r[h] || '').replace(/"/g, '""')}"`).join(','))

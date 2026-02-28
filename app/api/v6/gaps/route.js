@@ -10,6 +10,7 @@ export async function GET(req) {
     const state = searchParams.get('state');
     const sourceId = searchParams.get('source_id');
     const humanReviewed = searchParams.get('human_reviewed');
+    const riskTier = searchParams.get('risk_tier');
 
     const results = await db.execute(sql`
       SELECT 
@@ -22,6 +23,7 @@ export async function GET(req) {
         o.responsible_party,
         o.timeframe,
         o.documentation_required,
+        o.risk_tier,
         rs.id as source_id,
         rs.name as source_name,
         rs.state as source_state,
@@ -68,17 +70,27 @@ export async function GET(req) {
     } else if (humanReviewed === 'false') {
       rows = rows.filter(r => !r.human_status && r.assessment_id);
     }
+    if (riskTier && riskTier !== 'all') {
+      rows = rows.filter(r => r.risk_tier === riskTier);
+    }
 
     const summary = {
       total: rows.length,
       covered: rows.filter(r => r.status === 'COVERED').length,
       partial: rows.filter(r => r.status === 'PARTIAL').length,
       gap: rows.filter(r => r.status === 'GAP').length,
+      conflicting: rows.filter(r => r.status === 'CONFLICTING').length,
       unassessed: rows.filter(r => !r.status).length,
       human_reviewed: rows.filter(r => r.human_status).length,
     };
 
-    return Response.json({ rows, summary });
+    const tierCounts = {};
+    for (const r of rows) {
+      const t = r.risk_tier || 'unclassified';
+      tierCounts[t] = (tierCounts[t] || 0) + 1;
+    }
+
+    return Response.json({ rows, summary, tierCounts });
   } catch (err) {
     console.error('Gaps error:', err);
     return Response.json({ error: err.message }, { status: 500 });
