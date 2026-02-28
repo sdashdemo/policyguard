@@ -196,30 +196,28 @@ export default function GapReportMode() {
       {loading ? <Spinner /> : (
         <div className="card divide-y divide-stone-100">
           <div className="px-4 py-2 bg-stone-50 rounded-t-lg border-b border-stone-200 flex items-center text-xs font-medium text-stone-500">
-            <span className="w-6">
+            <span className="w-5 flex-shrink-0">
               <input type="checkbox" checked={selectAll} onChange={toggleSelectAll} className="rounded" />
             </span>
-            <span className="w-10 ml-1">Status</span>
-            <span className="w-20 ml-1">Tier</span>
-            <span className="w-36 ml-2">Citation</span>
-            <span className="flex-1 ml-2">Requirement</span>
-            <span className="w-40 ml-2">Gap Detail</span>
-            <span className="w-24 ml-2 text-right">Rec. Policy</span>
+            <span className="w-16 flex-shrink-0">Status</span>
+            <span className="w-24 flex-shrink-0">Tier</span>
+            <span className="w-32 flex-shrink-0">Citation</span>
+            <span className="flex-1 min-w-0">Requirement</span>
+            <span className="w-20 flex-shrink-0 text-right">Policy</span>
           </div>
           {filtered.length === 0 && <EmptyState message="No results match filters" />}
           {filtered.slice(0, 300).map((row, i) => (
-            <div key={row.obligation_id || i} className={`px-4 py-2.5 row-hover flex items-start gap-1 ${selected.has(row.assessment_id) ? 'bg-indigo-50/50' : ''}`}>
-              <span className="w-6 pt-1 flex-shrink-0">
+            <div key={row.obligation_id || i} className={`px-4 py-2.5 row-hover flex items-start gap-0 ${selected.has(row.assessment_id) ? 'bg-indigo-50/50' : ''}`}>
+              <span className="w-5 pt-1 flex-shrink-0">
                 {row.assessment_id && (
                   <input type="checkbox" checked={selected.has(row.assessment_id)} onChange={() => toggleSelect(row.assessment_id)} className="rounded" />
                 )}
               </span>
-              <span className="w-10 pt-0.5 flex-shrink-0 ml-1"><Badge status={row.human_status || row.status} /></span>
-              <span className="w-20 pt-0.5 flex-shrink-0 ml-1"><TierBadge tier={row.risk_tier} /></span>
-              <span className="w-36 flex-shrink-0 text-xs font-mono text-stone-600 pt-0.5 ml-2">{row.citation}</span>
-              <span className="flex-1 text-sm text-stone-800 line-clamp-2 ml-2">{row.requirement}</span>
-              <span className="w-40 flex-shrink-0 text-xs text-stone-500 line-clamp-2 ml-2">{row.gap_detail || '—'}</span>
-              <span className="w-24 flex-shrink-0 text-xs text-stone-500 text-right ml-2">{row.recommended_policy || '—'}</span>
+              <span className="w-16 pt-0.5 flex-shrink-0"><Badge status={row.human_status || row.status} /></span>
+              <span className="w-24 pt-0.5 flex-shrink-0"><TierBadge tier={row.risk_tier} /></span>
+              <span className="w-32 flex-shrink-0 text-xs font-mono text-stone-600 pt-0.5">{row.citation}</span>
+              <span className="flex-1 min-w-0 text-sm text-stone-800 line-clamp-2 pr-2" title={row.gap_detail || ''}>{row.requirement}</span>
+              <span className="w-20 flex-shrink-0 text-xs text-stone-500 text-right">{row.recommended_policy || row.policy_number || '—'}</span>
             </div>
           ))}
           {filtered.length > 300 && (
