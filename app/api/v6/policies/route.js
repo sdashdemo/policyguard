@@ -36,7 +36,13 @@ export async function GET(req) {
         ORDER BY section, id
       `);
 
-      // Get linked obligations (via coverage_assessments)
+      // Resolve latest run for scoping
+      const latestRun = await db.execute(sql`
+        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+      `);
+      const latestRunId = (latestRun.rows || latestRun)?.[0]?.id;
+
+      // Get linked obligations (via coverage_assessments, scoped to run)
       const oblsResult = await db.execute(sql`
         SELECT
           o.id as obligation_id, o.citation, o.requirement, o.risk_tier,
@@ -44,13 +50,15 @@ export async function GET(req) {
           ca.id as assessment_id, ca.status, ca.confidence, ca.gap_detail,
           ca.recommended_policy, ca.human_status, ca.review_notes, ca.reviewed_at,
           ca.match_score, ca.match_method, ca.reasoning,
-          ca.obligation_span, ca.provision_span
+          ca.obligation_span, ca.provision_span,
+          COALESCE(ca.human_status, ca.status) as effective_status
         FROM coverage_assessments ca
         JOIN obligations o ON ca.obligation_id = o.id
         JOIN reg_sources rs ON o.reg_source_id = rs.id
         WHERE ca.policy_id = ${id}
+          ${latestRunId ? sql`AND ca.map_run_id = ${latestRunId}` : sql``}
         ORDER BY
-          CASE ca.status
+          CASE COALESCE(ca.human_status, ca.status)
             WHEN 'GAP' THEN 1
             WHEN 'CONFLICTING' THEN 2
             WHEN 'PARTIAL' THEN 3
@@ -68,6 +76,13 @@ export async function GET(req) {
     }
 
     // ─── Policy list ────────────────────────────────
+    // Resolve latest run for scoping
+    const latestRunList = await db.execute(sql`
+      SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+    `);
+    const listRunId = (latestRunList.rows || latestRunList)?.[0]?.id;
+    const runScope = listRunId ? sql`AND ca.map_run_id = ${listRunId}` : sql``;
+
     const results = await db.execute(sql`
       SELECT
         p.id,
@@ -81,11 +96,11 @@ export async function GET(req) {
         p.status,
         p.indexed_at,
         (SELECT count(*) FROM provisions pv WHERE pv.policy_id = p.id) as provision_count,
-        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id) as assessment_count,
-        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id AND ca.status = 'COVERED') as covered_count,
-        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id AND ca.status = 'PARTIAL') as partial_count,
-        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id AND ca.status = 'GAP') as gap_count,
-        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id AND ca.status = 'CONFLICTING') as conflicting_count
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope}) as assessment_count,
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'COVERED') as covered_count,
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'PARTIAL') as partial_count,
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'GAP') as gap_count,
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'CONFLICTING') as conflicting_count
       FROM policies p
       WHERE p.indexed_at IS NOT NULL
       ORDER BY p.policy_number

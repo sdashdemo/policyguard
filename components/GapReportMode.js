@@ -26,7 +26,14 @@ export default function GapReportMode() {
   const [stateFilter, setStateFilter] = useState('all');
   const [tierFilter, setTierFilter] = useState('all');
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selected, setSelected] = useState(new Set());
+
+  // Debounce search by 400ms
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 400);
+    return () => clearTimeout(timer);
+  }, [search]);
   const [bulkWorking, setBulkWorking] = useState(false);
   const [selectAll, setSelectAll] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -38,19 +45,16 @@ export default function GapReportMode() {
     if (filter !== 'all') params.set('status', filter);
     if (stateFilter !== 'all') params.set('state', stateFilter);
     if (tierFilter !== 'all') params.set('risk_tier', tierFilter);
+    if (debouncedSearch) params.set('search', debouncedSearch);
     fetch(`/api/v6/gaps?${params}`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); setSelected(new Set()); setSelectAll(false); })
       .catch(() => setLoading(false));
-  }, [filter, stateFilter, tierFilter]);
+  }, [filter, stateFilter, tierFilter, debouncedSearch]);
 
   useEffect(() => { fetchGaps(); }, [fetchGaps]);
 
-  const filtered = (data?.rows || []).filter(r => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return r.citation?.toLowerCase().includes(q) || r.requirement?.toLowerCase().includes(q) || r.gap_detail?.toLowerCase().includes(q);
-  });
+  const filtered = data?.rows || [];
 
   const toggleSelect = (id) => {
     setSelected(prev => {
@@ -209,7 +213,7 @@ export default function GapReportMode() {
                     onClick={() => setExpandedId(isExpanded ? null : (row.obligation_id || i))}
                     className="flex items-start gap-0 flex-1 min-w-0 text-left row-hover rounded px-0 py-0"
                   >
-                    <span className="w-16 pt-0.5 flex-shrink-0"><Badge status={row.human_status || row.status} /></span>
+                    <span className="w-16 pt-0.5 flex-shrink-0"><Badge status={row.effective_status || row.human_status || row.status} /></span>
                     <span className="w-24 pt-0.5 flex-shrink-0"><TierBadge tier={row.risk_tier} /></span>
                     <span className="w-32 flex-shrink-0 text-xs font-mono text-stone-600 pt-0.5">{row.citation}</span>
                     <span className="flex-1 min-w-0 text-sm text-stone-800 line-clamp-2 pr-2">{row.requirement}</span>
@@ -292,7 +296,7 @@ export default function GapReportMode() {
                       <div className="ml-5">
                         <ReviewForm
                           assessmentId={row.assessment_id}
-                          currentStatus={row.human_status || row.status}
+                          currentStatus={row.effective_status || row.human_status || row.status}
                           currentNotes={row.review_notes}
                           onSubmit={handleSingleReview}
                           onCancel={() => setReviewingId(null)}

@@ -56,21 +56,39 @@ function validateAssessment(parsed, candidatePolicies, obligation) {
   return { valid: errors.length === 0, errors, parsed };
 }
 
-export async function GET() {
+export async function GET(req) {
   try {
+    const { searchParams } = new URL(req.url);
+    const runId = searchParams.get('run_id');
+
+    // Scope to specific run or latest
+    let effectiveRunId = runId;
+    if (!effectiveRunId) {
+      const latest = await db.execute(sql`
+        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+      `);
+      effectiveRunId = (latest.rows || latest)?.[0]?.id || null;
+    }
+
+    const runFilter = effectiveRunId
+      ? sql`WHERE map_run_id = ${effectiveRunId}`
+      : sql``;
+
     const result = await db.execute(sql`
       SELECT
         (SELECT count(*) FROM obligations) as total_obligations,
-        (SELECT count(DISTINCT obligation_id) FROM coverage_assessments) as assessed,
-        (SELECT count(*) FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments)) as unassessed,
-        (SELECT count(*) FROM coverage_assessments WHERE status = 'COVERED') as covered,
-        (SELECT count(*) FROM coverage_assessments WHERE status = 'PARTIAL') as partial,
-        (SELECT count(*) FROM coverage_assessments WHERE status = 'GAP') as gap,
-        (SELECT count(*) FROM coverage_assessments WHERE status = 'CONFLICTING') as conflicting,
-        (SELECT count(*) FROM coverage_assessments WHERE status = 'NEEDS_LEGAL_REVIEW') as needs_review
+        (SELECT count(DISTINCT obligation_id) FROM coverage_assessments ${runFilter}) as assessed,
+        (SELECT count(*) FROM obligations WHERE id NOT IN (
+          SELECT obligation_id FROM coverage_assessments ${runFilter}
+        )) as unassessed,
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'COVERED') as covered,
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'PARTIAL') as partial,
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'GAP') as gap,
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'CONFLICTING') as conflicting,
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review
     `);
     const row = (result.rows || result)[0];
-    return Response.json(row);
+    return Response.json({ ...row, run_id: effectiveRunId });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
   }
@@ -79,19 +97,44 @@ export async function GET() {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { map_run_id, facility_id } = body;
-    const runId = map_run_id || ulid('run');
+    const { map_run_id, facility_id, label } = body;
+    let runId = map_run_id;
 
+    // Create a new run record if no run_id provided
+    if (!runId) {
+      runId = ulid('run');
+      await db.execute(sql`
+        INSERT INTO map_runs (id, org_id, state, scope, label, status, model_id, prompt_version, started_at)
+        VALUES (${runId}, 'ars', 'FL', 'baseline', ${label || 'Assessment Run'}, 'running',
+                ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, NOW())
+        ON CONFLICT (id) DO NOTHING
+      `);
+    }
+
+    // Find next unassessed obligation FOR THIS RUN
     const nextResult = await db.execute(sql`
       SELECT id FROM obligations
-      WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments)
+      WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
       ORDER BY reg_source_id, citation
       LIMIT 1
     `);
     const nextRow = (nextResult.rows || nextResult)[0];
 
     if (!nextRow) {
-      return Response.json({ ok: true, done: true, message: 'All obligations assessed' });
+      // Run complete — update the run record with final stats
+      await db.execute(sql`
+        UPDATE map_runs SET
+          status = 'completed',
+          completed_at = NOW(),
+          total_obligations = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId}),
+          covered = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'COVERED'),
+          partial = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'PARTIAL'),
+          gaps = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'GAP'),
+          not_applicable = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'NOT_APPLICABLE'),
+          needs_legal_review = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW')
+        WHERE id = ${runId}
+      `);
+      return Response.json({ ok: true, done: true, message: 'All obligations assessed', map_run_id: runId });
     }
 
     const [obl] = await db.select().from(obligations).where(eq(obligations.id, nextRow.id));
@@ -121,7 +164,7 @@ export async function POST(req) {
       });
 
       const remaining = await db.execute(sql`
-        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments)
+        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
       `);
       const left = Number((remaining.rows || remaining)[0].c);
 
@@ -223,7 +266,7 @@ export async function POST(req) {
     });
 
     const remaining = await db.execute(sql`
-      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments)
+      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
     `);
     const left = Number((remaining.rows || remaining)[0].c);
 

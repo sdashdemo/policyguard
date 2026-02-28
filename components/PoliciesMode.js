@@ -277,7 +277,7 @@ function PolicyDetail({ detail }) {
 
           <div className="border border-stone-200 rounded-lg bg-white divide-y divide-stone-100 max-h-96 overflow-y-auto">
             {filteredObls.slice(0, 50).map((obl, i) => {
-              const effectiveStatus = obl.human_status || obl.status;
+              const effectiveStatus = obl.effective_status || obl.human_status || obl.status;
               const isOblExpanded = expandedObl === (obl.obligation_id || i);
               const hasDetail = obl.gap_detail || obl.confidence || obl.match_method;
               return (

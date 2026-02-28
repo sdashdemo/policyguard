@@ -1,68 +1,83 @@
--- PolicyGuard Accuracy Spot-Check: Stratified Sample
--- Run this in Supabase SQL Editor to get 35 assessments for manual review
--- 10 COVERED, 10 PARTIAL, 10 GAP, 5 CONFLICTING (or all if fewer)
+-- PolicyGuard Accuracy Spot-Check: Stratified Sample (Run-Scoped)
+-- Run AFTER the Step 0 migration
 
-WITH sample AS (
+-- First: verify you have a baseline run
+-- SELECT id, label, status, total_obligations FROM map_runs ORDER BY created_at DESC;
+
+WITH latest_run AS (
+  SELECT id FROM map_runs WHERE status = 'completed' ORDER BY created_at DESC LIMIT 1
+),
+sample AS (
   -- 10 random COVERED
-  (SELECT ca.id as assessment_id, ca.status, ca.confidence, ca.gap_detail, ca.reasoning,
-          ca.match_method, ca.match_score, ca.covering_policy_number,
-          o.citation, o.requirement,
+  (SELECT ca.id as assessment_id,
+          COALESCE(ca.human_status, ca.status) as effective_status,
+          ca.status as llm_status, ca.confidence, ca.gap_detail, ca.reasoning,
+          ca.match_method, ca.match_score, ca.recommended_policy,
+          ca.obligation_span, ca.provision_span,
+          o.citation, o.requirement, o.risk_tier,
           rs.name as source_name,
           p.policy_number, p.title as policy_title,
           'COVERED' as sample_group
    FROM coverage_assessments ca
+   JOIN latest_run lr ON ca.map_run_id = lr.id
    JOIN obligations o ON ca.obligation_id = o.id
    JOIN reg_sources rs ON o.reg_source_id = rs.id
    LEFT JOIN policies p ON ca.policy_id = p.id
-   WHERE ca.status = 'COVERED'
+   WHERE COALESCE(ca.human_status, ca.status) = 'COVERED'
    ORDER BY random() LIMIT 10)
 
   UNION ALL
 
   -- 10 random PARTIAL
-  (SELECT ca.id, ca.status, ca.confidence, ca.gap_detail, ca.reasoning,
-          ca.match_method, ca.match_score, ca.covering_policy_number,
-          o.citation, o.requirement,
-          rs.name as source_name,
-          p.policy_number, p.title,
+  (SELECT ca.id,
+          COALESCE(ca.human_status, ca.status), ca.status, ca.confidence,
+          ca.gap_detail, ca.reasoning, ca.match_method, ca.match_score,
+          ca.recommended_policy, ca.obligation_span, ca.provision_span,
+          o.citation, o.requirement, o.risk_tier,
+          rs.name, p.policy_number, p.title,
           'PARTIAL'
    FROM coverage_assessments ca
+   JOIN latest_run lr ON ca.map_run_id = lr.id
    JOIN obligations o ON ca.obligation_id = o.id
    JOIN reg_sources rs ON o.reg_source_id = rs.id
    LEFT JOIN policies p ON ca.policy_id = p.id
-   WHERE ca.status = 'PARTIAL'
+   WHERE COALESCE(ca.human_status, ca.status) = 'PARTIAL'
    ORDER BY random() LIMIT 10)
 
   UNION ALL
 
   -- 10 random GAP
-  (SELECT ca.id, ca.status, ca.confidence, ca.gap_detail, ca.reasoning,
-          ca.match_method, ca.match_score, ca.covering_policy_number,
-          o.citation, o.requirement,
-          rs.name as source_name,
-          p.policy_number, p.title,
+  (SELECT ca.id,
+          COALESCE(ca.human_status, ca.status), ca.status, ca.confidence,
+          ca.gap_detail, ca.reasoning, ca.match_method, ca.match_score,
+          ca.recommended_policy, ca.obligation_span, ca.provision_span,
+          o.citation, o.requirement, o.risk_tier,
+          rs.name, p.policy_number, p.title,
           'GAP'
    FROM coverage_assessments ca
+   JOIN latest_run lr ON ca.map_run_id = lr.id
    JOIN obligations o ON ca.obligation_id = o.id
    JOIN reg_sources rs ON o.reg_source_id = rs.id
    LEFT JOIN policies p ON ca.policy_id = p.id
-   WHERE ca.status = 'GAP'
+   WHERE COALESCE(ca.human_status, ca.status) = 'GAP'
    ORDER BY random() LIMIT 10)
 
   UNION ALL
 
   -- 5 random CONFLICTING
-  (SELECT ca.id, ca.status, ca.confidence, ca.gap_detail, ca.reasoning,
-          ca.match_method, ca.match_score, ca.covering_policy_number,
-          o.citation, o.requirement,
-          rs.name as source_name,
-          p.policy_number, p.title,
+  (SELECT ca.id,
+          COALESCE(ca.human_status, ca.status), ca.status, ca.confidence,
+          ca.gap_detail, ca.reasoning, ca.match_method, ca.match_score,
+          ca.recommended_policy, ca.obligation_span, ca.provision_span,
+          o.citation, o.requirement, o.risk_tier,
+          rs.name, p.policy_number, p.title,
           'CONFLICTING'
    FROM coverage_assessments ca
+   JOIN latest_run lr ON ca.map_run_id = lr.id
    JOIN obligations o ON ca.obligation_id = o.id
    JOIN reg_sources rs ON o.reg_source_id = rs.id
    LEFT JOIN policies p ON ca.policy_id = p.id
-   WHERE ca.status = 'CONFLICTING'
+   WHERE COALESCE(ca.human_status, ca.status) = 'CONFLICTING'
    ORDER BY random() LIMIT 5)
 )
 SELECT
@@ -70,13 +85,18 @@ SELECT
   citation,
   requirement,
   source_name,
-  status,
+  risk_tier,
+  effective_status,
+  llm_status,
   confidence,
   policy_number,
   policy_title,
+  recommended_policy,
   gap_detail,
   reasoning,
   match_method,
-  match_score
+  match_score,
+  obligation_span,
+  provision_span
 FROM sample
 ORDER BY sample_group, citation;
