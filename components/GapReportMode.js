@@ -240,6 +240,12 @@ export default function GapReportMode() {
                           <p className="text-stone-700 bg-white p-2 rounded border border-stone-200">{row.gap_detail}</p>
                         </div>
                       )}
+                      {row.reasoning && (
+                        <div className="col-span-2">
+                          <p className="font-medium text-stone-500 mb-1">Reasoning</p>
+                          <p className="text-stone-600 bg-white p-2 rounded border border-stone-200">{row.reasoning}</p>
+                        </div>
+                      )}
                       {row.policy_number && (
                         <div>
                           <p className="font-medium text-stone-500 mb-1">Covering Policy</p>

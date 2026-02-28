@@ -43,7 +43,8 @@ export async function GET(req) {
           rs.name as source_name, rs.state as source_state,
           ca.id as assessment_id, ca.status, ca.confidence, ca.gap_detail,
           ca.recommended_policy, ca.human_status, ca.review_notes, ca.reviewed_at,
-          ca.match_score, ca.match_method
+          ca.match_score, ca.match_method, ca.reasoning,
+          ca.obligation_span, ca.provision_span
         FROM coverage_assessments ca
         JOIN obligations o ON ca.obligation_id = o.id
         JOIN reg_sources rs ON o.reg_source_id = rs.id

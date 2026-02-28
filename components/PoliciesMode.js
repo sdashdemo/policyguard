@@ -160,6 +160,7 @@ function PolicyDetail({ detail }) {
   const { policy, provisions, obligations } = detail;
   const [showProvisions, setShowProvisions] = useState(false);
   const [oblFilter, setOblFilter] = useState('all');
+  const [expandedObl, setExpandedObl] = useState(null);
 
   const oblCounts = {
     total: obligations.length,
@@ -271,15 +272,53 @@ function PolicyDetail({ detail }) {
             })}
           </div>
 
-          <div className="border border-stone-200 rounded-lg bg-white divide-y divide-stone-100 max-h-64 overflow-y-auto">
+          <div className="border border-stone-200 rounded-lg bg-white divide-y divide-stone-100 max-h-96 overflow-y-auto">
             {filteredObls.slice(0, 50).map((obl, i) => {
               const effectiveStatus = obl.human_status || obl.status;
+              const isOblExpanded = expandedObl === (obl.obligation_id || i);
+              const hasDetail = obl.gap_detail || obl.confidence || obl.match_method;
               return (
-                <div key={obl.obligation_id || i} className="px-3 py-2 flex items-start gap-2 text-xs">
-                  <span className="w-14 pt-0.5 flex-shrink-0"><Badge status={effectiveStatus} /></span>
-                  <span className="w-36 flex-shrink-0 font-mono text-stone-600 pt-0.5">{obl.citation}</span>
-                  <span className="flex-1 min-w-0 text-stone-700 line-clamp-2">{obl.requirement}</span>
-                  <span className="w-24 flex-shrink-0 text-stone-400 text-right pt-0.5">{obl.source_name}</span>
+                <div key={obl.obligation_id || i}>
+                  <button
+                    onClick={() => setExpandedObl(isOblExpanded ? null : (obl.obligation_id || i))}
+                    className="w-full px-3 py-2 flex items-start gap-2 text-xs text-left hover:bg-stone-50"
+                  >
+                    <span className="w-14 pt-0.5 flex-shrink-0"><Badge status={effectiveStatus} /></span>
+                    <span className="w-36 flex-shrink-0 font-mono text-stone-600 pt-0.5">{obl.citation}</span>
+                    <span className="flex-1 min-w-0 text-stone-700 line-clamp-2">{obl.requirement}</span>
+                    <span className="w-24 flex-shrink-0 text-stone-400 text-right pt-0.5">{obl.source_name}</span>
+                  </button>
+                  {isOblExpanded && (
+                    <div className="px-3 pb-3 bg-stone-50 border-t border-stone-100">
+                      <div className="ml-14 grid grid-cols-2 gap-3 text-xs mt-2">
+                        <div>
+                          <p className="font-medium text-stone-500 mb-0.5">Assessment</p>
+                          <p>
+                            <Badge status={obl.status} />
+                            {obl.confidence && <span className="ml-1 text-stone-400">({obl.confidence})</span>}
+                          </p>
+                        </div>
+                        {obl.match_method && (
+                          <div>
+                            <p className="font-medium text-stone-500 mb-0.5">Match</p>
+                            <p className="text-stone-600">{obl.match_method}{obl.match_score ? ` (score: ${obl.match_score})` : ''}</p>
+                          </div>
+                        )}
+                        {obl.gap_detail && (
+                          <div className="col-span-2">
+                            <p className="font-medium text-stone-500 mb-0.5">Gap Detail</p>
+                            <p className="text-stone-700 bg-white p-2 rounded border border-stone-200">{obl.gap_detail}</p>
+                          </div>
+                        )}
+                        {obl.human_status && (
+                          <div className="col-span-2">
+                            <p className="font-medium text-indigo-600 mb-0.5">Human Review</p>
+                            <p><Badge status={obl.human_status} />{obl.review_notes && <span className="ml-2 text-stone-600">{obl.review_notes}</span>}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
