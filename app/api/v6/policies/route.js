@@ -38,7 +38,7 @@ export async function GET(req) {
 
       // Resolve latest run for scoping
       const latestRun = await db.execute(sql`
-        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, started_at DESC LIMIT 1
       `);
       const latestRunId = (latestRun.rows || latestRun)?.[0]?.id;
 
@@ -78,7 +78,7 @@ export async function GET(req) {
     // ─── Policy list ────────────────────────────────
     // Resolve latest run for scoping
     const latestRunList = await db.execute(sql`
-      SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+      SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, started_at DESC LIMIT 1
     `);
     const listRunId = (latestRunList.rows || latestRunList)?.[0]?.id;
     const runScope = listRunId ? sql`AND ca.map_run_id = ${listRunId}` : sql``;

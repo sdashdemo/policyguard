@@ -20,7 +20,7 @@ export async function GET(req) {
     let effectiveRunId = runId;
     if (!effectiveRunId) {
       const latestRun = await db.execute(sql`
-        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, started_at DESC LIMIT 1
       `);
       const row = (latestRun.rows || latestRun)?.[0];
       effectiveRunId = row?.id || null;
@@ -127,7 +127,7 @@ export async function GET(req) {
     if (effectiveRunId) {
       const runResult = await db.execute(sql`
         SELECT id, label, state, scope, status, model_id, prompt_version,
-               started_at, completed_at, created_at
+               started_at, completed_at
         FROM map_runs WHERE id = ${effectiveRunId}
       `);
       runInfo = (runResult.rows || runResult)?.[0] || null;

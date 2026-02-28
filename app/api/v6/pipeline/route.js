@@ -102,7 +102,7 @@ export async function GET() {
     // Latest run info
     const latestRun = await db.execute(sql`
       SELECT id, label, state, scope, status, started_at, completed_at
-      FROM map_runs ORDER BY created_at DESC LIMIT 1
+      FROM map_runs ORDER BY started_at DESC LIMIT 1
     `);
 
     return Response.json({

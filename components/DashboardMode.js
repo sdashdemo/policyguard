@@ -3,7 +3,7 @@ import { Badge, CoverageBar, StatCard, Spinner, EmptyState } from './shared';
 
 export default function DashboardMode({ data, onNavigate }) {
   if (!data) return <Spinner />;
-  const s = data.stats;
+  const s = data.stats || {};
   const totalAssessed = Number(s.total_assessed || 0);
   const totalObl = Number(s.total_obligations || 0);
   const covered = Number(s.covered || 0);

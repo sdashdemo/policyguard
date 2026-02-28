@@ -65,7 +65,7 @@ export async function GET(req) {
     let effectiveRunId = runId;
     if (!effectiveRunId) {
       const latest = await db.execute(sql`
-        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, created_at DESC LIMIT 1
+        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, started_at DESC LIMIT 1
       `);
       effectiveRunId = (latest.rows || latest)?.[0]?.id || null;
     }
