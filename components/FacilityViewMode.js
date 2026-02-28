@@ -10,14 +10,38 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
   const [expandedId, setExpandedId] = useState(null);
   const [reviewingId, setReviewingId] = useState(null);
 
+  // Facility picker state (when no facilityId)
+  const [facilities, setFacilities] = useState([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [localFacilityId, setLocalFacilityId] = useState(facilityId);
+
+  const activeFacilityId = localFacilityId || facilityId;
+
+  // Reset local selection when prop changes
+  useEffect(() => { setLocalFacilityId(facilityId); }, [facilityId]);
+
+  // Load facility list if no facility selected
   useEffect(() => {
-    if (!facilityId) return;
+    if (activeFacilityId) return;
+    setPickerLoading(true);
+    fetch('/api/v6/dashboard')
+      .then(r => r.json())
+      .then(d => {
+        setFacilities(d.facilities || []);
+        setPickerLoading(false);
+      })
+      .catch(() => setPickerLoading(false));
+  }, [activeFacilityId]);
+
+  // Load facility detail when selected
+  useEffect(() => {
+    if (!activeFacilityId) { setLoading(false); return; }
     setLoading(true);
-    fetch(`/api/v6/facilities?id=${facilityId}`)
+    fetch(`/api/v6/facilities?id=${activeFacilityId}`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [facilityId]);
+      .catch(() => { setData(null); setLoading(false); });
+  }, [activeFacilityId]);
 
   const handleReview = async (assessmentId, humanStatus, notes) => {
     await fetch('/api/v6/review', {
@@ -25,20 +49,100 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assessment_id: assessmentId, human_status: humanStatus, review_notes: notes }),
     });
-    // Reload
-    const d = await fetch(`/api/v6/facilities?id=${facilityId}`).then(r => r.json());
+    const d = await fetch(`/api/v6/facilities?id=${activeFacilityId}`).then(r => r.json());
     setData(d);
     setReviewingId(null);
   };
 
+  // ─── Facility Picker ───────────────────────────────
+  if (!activeFacilityId) {
+    if (pickerLoading) return <Spinner />;
+
+    const byState = {};
+    for (const f of facilities) {
+      const st = f.state || 'Unknown';
+      if (!byState[st]) byState[st] = [];
+      byState[st].push(f);
+    }
+
+    return (
+      <div className="page-enter space-y-4">
+        <div>
+          <h1 className="text-xl font-semibold">Facility View</h1>
+          <p className="text-sm text-stone-500">Select a facility to view compliance details</p>
+        </div>
+
+        {Object.keys(byState).sort().map(state => (
+          <div key={state}>
+            <h2 className="text-xs font-semibold text-stone-400 uppercase tracking-wider mb-2 mt-4">{state}</h2>
+            <div className="card divide-y divide-stone-100">
+              {byState[state].map(f => {
+                const covered = Number(f.covered || 0);
+                const partial = Number(f.partial || 0);
+                const gaps = Number(f.gaps || 0);
+                const assessed = covered + partial + gaps;
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => setLocalFacilityId(f.id)}
+                    className="w-full px-4 py-3 row-hover text-left flex items-center gap-4"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold">{f.abbreviation || f.name}</p>
+                      <p className="text-xs text-stone-500 mt-0.5 truncate">{f.name}</p>
+                      <p className="text-xs text-stone-400 mt-0.5">
+                        {Array.isArray(f.levels_of_care) ? f.levels_of_care.join(', ') : 'No LOC configured'}
+                      </p>
+                    </div>
+                    <div className="w-48 flex-shrink-0 text-right">
+                      {assessed > 0 ? (
+                        <>
+                          <p className="text-xs tabular-nums">
+                            <span className="text-emerald-600">{covered}</span>
+                            {' / '}
+                            <span className="text-amber-600">{partial}</span>
+                            {' / '}
+                            <span className="text-red-600">{gaps}</span>
+                          </p>
+                          <div className="mt-1">
+                            <CoverageBar covered={covered} partial={partial} gaps={gaps} total={assessed} />
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-xs text-stone-400">Org-level data</p>
+                      )}
+                    </div>
+                    <span className="text-stone-300 text-sm">→</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        {facilities.length === 0 && (
+          <EmptyState message="No facilities configured. Add facilities in Facility Matrix." />
+        )}
+      </div>
+    );
+  }
+
+  // ─── Facility Detail ───────────────────────────────
   if (loading) return <Spinner />;
-  if (!data?.facility) return <EmptyState message="Facility not found" />;
+
+  if (!data?.facility) {
+    return (
+      <div className="page-enter space-y-4">
+        <button onClick={() => setLocalFacilityId(null)} className="text-xs text-stone-400 hover:text-stone-700">← All Facilities</button>
+        <EmptyState message="Facility not found" />
+      </div>
+    );
+  }
 
   const fac = data.facility;
   const obls = data.obligations || [];
   const sources = [...new Set(obls.map(o => o.source_name))].sort();
 
-  // Filter
   let filtered = obls;
   if (filter !== 'all') {
     if (filter === 'UNASSESSED') filtered = filtered.filter(o => !o.status);
@@ -55,41 +159,56 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
     covered: obls.filter(o => o.status === 'COVERED').length,
     partial: obls.filter(o => o.status === 'PARTIAL').length,
     gap: obls.filter(o => o.status === 'GAP').length,
+    conflicting: obls.filter(o => o.status === 'CONFLICTING').length,
     unassessed: obls.filter(o => !o.status).length,
     reviewed: obls.filter(o => o.human_status).length,
   };
+
+  const assessed = counts.covered + counts.partial + counts.gap + counts.conflicting;
 
   return (
     <div className="page-enter space-y-4">
       <div className="flex items-start justify-between">
         <div>
-          <button onClick={() => onNavigate('dashboard')} className="text-xs text-stone-400 hover:text-stone-700 mb-1">← Dashboard</button>
+          <button onClick={() => setLocalFacilityId(null)} className="text-xs text-stone-400 hover:text-stone-700 mb-1">← All Facilities</button>
           <h1 className="text-xl font-semibold">{fac.name}</h1>
           <p className="text-sm text-stone-500">{fac.state} · {(fac.levels_of_care || []).join(', ') || 'No LOC configured'}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-        <StatCard label="Total" value={counts.total} />
-        <StatCard label="Covered" value={counts.covered} color="text-emerald-700" />
-        <StatCard label="Partial" value={counts.partial} color="text-amber-700" />
-        <StatCard label="Gaps" value={counts.gap} color="text-red-700" />
-        <StatCard label="Unassessed" value={counts.unassessed} />
-        <StatCard label="Human Reviewed" value={counts.reviewed} color="text-indigo-700" />
-      </div>
-
-      {counts.total > 0 && (
-        <CoverageBar covered={counts.covered} partial={counts.partial} gaps={counts.gap} total={counts.total - counts.unassessed} />
+      {assessed === 0 ? (
+        <div className="card p-6">
+          <p className="text-sm text-stone-600 font-medium">No facility-level assessments yet</p>
+          <p className="text-xs text-stone-400 mt-2">
+            Assessments ran at org level. Showing all obligations from <strong>{fac.state}</strong> regulatory sources below.
+            {obls.length > 0
+              ? ` ${obls.length} obligations from ${sources.length} source${sources.length !== 1 ? 's' : ''} apply.`
+              : ' No regulatory sources loaded for this state yet.'}
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 md:grid-cols-7 gap-2">
+            <StatCard label="Total" value={counts.total} />
+            <StatCard label="Covered" value={counts.covered} color="text-emerald-700" />
+            <StatCard label="Partial" value={counts.partial} color="text-amber-700" />
+            <StatCard label="Gaps" value={counts.gap} color="text-red-700" />
+            <StatCard label="Conflicting" value={counts.conflicting} color="text-purple-700" />
+            <StatCard label="Unassessed" value={counts.unassessed} />
+            <StatCard label="Reviewed" value={counts.reviewed} color="text-indigo-700" />
+          </div>
+          <CoverageBar covered={counts.covered} partial={counts.partial} gaps={counts.gap} total={assessed} />
+        </>
       )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
-        {['all', 'GAP', 'PARTIAL', 'COVERED', 'UNASSESSED'].map(s => (
+        {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'UNASSESSED'].map(s => (
           <FilterPill key={s} active={filter === s} label={s === 'all' ? `All (${obls.length})` : `${s} (${s === 'UNASSESSED' ? counts.unassessed : counts[s.toLowerCase()] || 0})`} onClick={() => setFilter(s)} />
         ))}
         <span className="text-stone-300">|</span>
         <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="text-xs border border-stone-200 rounded px-2 py-1 bg-white">
-          <option value="all">All Sources</option>
+          <option value="all">All Sources ({sources.length})</option>
           {sources.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <input
@@ -165,7 +284,6 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
                     )}
                   </div>
 
-                  {/* Human review controls */}
                   {obl.assessment_id && !isReviewing && (
                     <button onClick={(e) => { e.stopPropagation(); setReviewingId(obl.id); }} className="mt-3 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
                       {obl.human_status ? 'Update Review' : 'Add Human Review'}
@@ -211,6 +329,3 @@ function ReviewForm({ assessmentId, currentStatus, currentNotes, onSubmit, onCan
     </div>
   );
 }
-
-// ─── GAP REPORT MODE ────────────────────────────────────────
-
