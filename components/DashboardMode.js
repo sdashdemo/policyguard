@@ -9,6 +9,7 @@ export default function DashboardMode({ data, onNavigate }) {
   const covered = Number(s.covered || 0);
   const partial = Number(s.partial || 0);
   const gaps = Number(s.gaps || 0);
+  const notApplicable = Number(s.not_applicable || 0);
   const unassessed = totalObl - totalAssessed;
 
   return (
@@ -18,12 +19,13 @@ export default function DashboardMode({ data, onNavigate }) {
         <p className="text-stone-500 text-sm mt-1">Advanced Recovery Systems — {data.facilities?.length || 0} facilities across {new Set(data.facilities?.map(f => f.state)).size} states</p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatCard label="Total Obligations" value={totalObl} />
         <StatCard label="Assessed" value={totalAssessed} sub={`${unassessed} remaining`} />
         <StatCard label="Covered" value={covered} color="text-emerald-700" />
         <StatCard label="Partial" value={partial} color="text-amber-700" />
         <StatCard label="Gaps" value={gaps} color="text-red-700" />
+        <StatCard label="N/A" value={notApplicable} color="text-stone-500" />
       </div>
 
       {totalAssessed > 0 && (

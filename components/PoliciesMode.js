@@ -171,6 +171,7 @@ function PolicyDetail({ detail }) {
     partial: obligations.filter(o => o.status === 'PARTIAL').length,
     gap: obligations.filter(o => o.status === 'GAP').length,
     conflicting: obligations.filter(o => o.status === 'CONFLICTING').length,
+    not_applicable: obligations.filter(o => o.status === 'NOT_APPLICABLE').length,
   };
 
   let filteredObls = obligations;
@@ -262,14 +263,14 @@ function PolicyDetail({ detail }) {
           </p>
 
           <div className="flex gap-1 mb-2">
-            {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING'].map(s => {
+            {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'NOT_APPLICABLE'].map(s => {
               const count = s === 'all' ? obligations.length : oblCounts[s.toLowerCase()] || 0;
               if (count === 0 && s !== 'all') return null;
               return (
                 <button key={s} onClick={() => setOblFilter(s)}
                   className={`px-2 py-0.5 text-[10px] rounded-full ${oblFilter === s ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-500 hover:bg-stone-200'}`}
                 >
-                  {s === 'all' ? 'All' : s} ({count})
+                  {s === 'all' ? 'All' : s === 'NOT_APPLICABLE' ? 'N/A' : s} ({count})
                 </button>
               );
             })}

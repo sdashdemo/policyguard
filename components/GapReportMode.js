@@ -147,8 +147,8 @@ export default function GapReportMode() {
 
       {/* Status filter + search */}
       <div className="flex flex-wrap items-center gap-2">
-        {['GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'UNASSESSED', 'all'].map(s => (
-          <FilterPill key={s} active={filter === s} label={s === 'all' ? 'All' : s} onClick={() => setFilter(s)} />
+        {['GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'NOT_APPLICABLE', 'UNASSESSED', 'all'].map(s => (
+          <FilterPill key={s} active={filter === s} label={s === 'all' ? 'All' : s === 'NOT_APPLICABLE' ? 'N/A' : s} onClick={() => setFilter(s)} />
         ))}
         <span className="text-stone-300">|</span>
         <select value={stateFilter} onChange={e => setStateFilter(e.target.value)} className="text-xs border border-stone-200 rounded px-2 py-1 bg-white">
@@ -248,6 +248,34 @@ export default function GapReportMode() {
                         <div className="col-span-2">
                           <p className="font-medium text-stone-500 mb-1">Reasoning</p>
                           <p className="text-stone-600 bg-white p-2 rounded border border-stone-200">{row.reasoning}</p>
+                        </div>
+                      )}
+                      {row.trigger_span && (
+                        <div>
+                          <p className="font-medium text-stone-500 mb-1">N/A Trigger</p>
+                          <p className="text-stone-600 bg-stone-50 p-2 rounded border border-stone-200 font-mono text-[11px]">{row.trigger_span}</p>
+                        </div>
+                      )}
+                      {row.inapplicability_reason && (
+                        <div>
+                          <p className="font-medium text-stone-500 mb-1">N/A Evidence</p>
+                          <p className="text-stone-600 bg-stone-50 p-2 rounded border border-stone-200 font-mono text-[11px]">{row.inapplicability_reason}</p>
+                        </div>
+                      )}
+                      {row.conflict_detail && (
+                        <div className="col-span-2">
+                          <p className="font-medium text-purple-600 mb-1">Conflict Detail</p>
+                          <p className="text-stone-700 bg-purple-50 p-2 rounded border border-purple-200">{row.conflict_detail}</p>
+                        </div>
+                      )}
+                      {row.reviewed_provision_refs && row.reviewed_provision_refs.length > 0 && (
+                        <div className="col-span-2">
+                          <p className="font-medium text-stone-500 mb-1">Provisions Reviewed</p>
+                          <div className="flex flex-wrap gap-1">
+                            {(Array.isArray(row.reviewed_provision_refs) ? row.reviewed_provision_refs : []).map((ref, ri) => (
+                              <span key={ri} className="px-1.5 py-0.5 text-[10px] bg-stone-100 text-stone-600 rounded font-mono">{ref}</span>
+                            ))}
+                          </div>
                         </div>
                       )}
                       {row.policy_number && (

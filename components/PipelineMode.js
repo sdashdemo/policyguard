@@ -208,7 +208,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
         let done = false;
         let runId = null;
         let totalAssessed = 0;
-        const statusCounts = { COVERED: 0, PARTIAL: 0, GAP: 0, CONFLICTING: 0, NEEDS_LEGAL_REVIEW: 0 };
+        const statusCounts = { COVERED: 0, PARTIAL: 0, GAP: 0, CONFLICTING: 0, NOT_APPLICABLE: 0, NEEDS_LEGAL_REVIEW: 0 };
 
         while (!done) {
           try {
@@ -237,7 +237,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
           }
         }
         addLog(`✓ Assessment complete: ${totalAssessed} assessed`);
-        addLog(`  COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | CONFLICTING: ${statusCounts.CONFLICTING} | NEEDS REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW}`);
+        addLog(`  COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | N/A: ${statusCounts.NOT_APPLICABLE} | CONFLICTING: ${statusCounts.CONFLICTING} | NEEDS REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW}`);
       } catch (err) {
         addLog(`✗ Assessment error: ${err.message}`);
       }

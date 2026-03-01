@@ -148,13 +148,13 @@ export default function RegulationsMode({ onNavigate }) {
                     <>
                       {/* Filters */}
                       <div className="flex flex-wrap items-center gap-2 mb-3 ml-7">
-                        {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'UNASSESSED'].map(s => {
+                        {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'NOT_APPLICABLE', 'UNASSESSED'].map(s => {
                           const count = s === 'all' ? obls.length
                             : s === 'UNASSESSED' ? obls.filter(o => !o.status).length
                             : obls.filter(o => o.status === s).length;
                           if (count === 0 && s !== 'all') return null;
                           return (
-                            <FilterPill key={s} active={oblFilter === s} label={`${s === 'all' ? 'All' : s} (${count})`} onClick={() => setOblFilter(s)} />
+                            <FilterPill key={s} active={oblFilter === s} label={`${s === 'all' ? 'All' : s === 'NOT_APPLICABLE' ? 'N/A' : s} (${count})`} onClick={() => setOblFilter(s)} />
                           );
                         })}
                         <input

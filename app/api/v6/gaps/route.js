@@ -75,6 +75,8 @@ export async function GET(req) {
         ca.recommended_policy, ca.policy_id, ca.match_method, ca.match_score,
         ca.reasoning, ca.obligation_span, ca.provision_span, ca.assessed_by,
         ca.human_status, ca.reviewed_by, ca.reviewed_at, ca.review_notes,
+        ca.trigger_span, ca.inapplicability_reason, ca.conflict_detail,
+        ca.reviewed_provision_refs, ca.covering_policy_number,
         ca.map_run_id,
         COALESCE(ca.human_status, ca.status) as effective_status,
         p.policy_number, p.title as policy_title, p.domain as policy_domain
@@ -97,6 +99,7 @@ export async function GET(req) {
         count(*) FILTER (WHERE COALESCE(ca.human_status, ca.status) = 'PARTIAL') as partial,
         count(*) FILTER (WHERE COALESCE(ca.human_status, ca.status) = 'GAP') as gap,
         count(*) FILTER (WHERE COALESCE(ca.human_status, ca.status) = 'CONFLICTING') as conflicting,
+        count(*) FILTER (WHERE COALESCE(ca.human_status, ca.status) = 'NOT_APPLICABLE') as not_applicable,
         count(*) FILTER (WHERE ca.id IS NULL) as unassessed,
         count(*) FILTER (WHERE ca.human_status IS NOT NULL) as human_reviewed
       FROM obligations o

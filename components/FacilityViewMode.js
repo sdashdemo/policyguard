@@ -160,11 +160,12 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
     partial: obls.filter(o => o.status === 'PARTIAL').length,
     gap: obls.filter(o => o.status === 'GAP').length,
     conflicting: obls.filter(o => o.status === 'CONFLICTING').length,
+    not_applicable: obls.filter(o => o.status === 'NOT_APPLICABLE').length,
     unassessed: obls.filter(o => !o.status).length,
     reviewed: obls.filter(o => o.human_status).length,
   };
 
-  const assessed = counts.covered + counts.partial + counts.gap + counts.conflicting;
+  const assessed = counts.covered + counts.partial + counts.gap + counts.conflicting + counts.not_applicable;
 
   return (
     <div className="page-enter space-y-4">
@@ -203,8 +204,8 @@ export default function FacilityViewMode({ facilityId, onNavigate }) {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
-        {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'UNASSESSED'].map(s => (
-          <FilterPill key={s} active={filter === s} label={s === 'all' ? `All (${obls.length})` : `${s} (${s === 'UNASSESSED' ? counts.unassessed : counts[s.toLowerCase()] || 0})`} onClick={() => setFilter(s)} />
+        {['all', 'GAP', 'PARTIAL', 'COVERED', 'CONFLICTING', 'NOT_APPLICABLE', 'UNASSESSED'].map(s => (
+          <FilterPill key={s} active={filter === s} label={s === 'all' ? `All (${obls.length})` : `${s === 'NOT_APPLICABLE' ? 'N/A' : s} (${s === 'UNASSESSED' ? counts.unassessed : counts[s.toLowerCase()] || 0})`} onClick={() => setFilter(s)} />
         ))}
         <span className="text-stone-300">|</span>
         <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="text-xs border border-stone-200 rounded px-2 py-1 bg-white">

@@ -51,6 +51,8 @@ export async function GET(req) {
           ca.recommended_policy, ca.human_status, ca.review_notes, ca.reviewed_at,
           ca.match_score, ca.match_method, ca.reasoning,
           ca.obligation_span, ca.provision_span,
+          ca.trigger_span, ca.inapplicability_reason, ca.conflict_detail,
+          ca.reviewed_provision_refs, ca.covering_policy_number,
           COALESCE(ca.human_status, ca.status) as effective_status
         FROM coverage_assessments ca
         JOIN obligations o ON ca.obligation_id = o.id
@@ -100,7 +102,8 @@ export async function GET(req) {
         (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'COVERED') as covered_count,
         (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'PARTIAL') as partial_count,
         (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'GAP') as gap_count,
-        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'CONFLICTING') as conflicting_count
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'CONFLICTING') as conflicting_count,
+        (SELECT count(*) FROM coverage_assessments ca WHERE ca.policy_id = p.id ${runScope} AND COALESCE(ca.human_status, ca.status) = 'NOT_APPLICABLE') as not_applicable_count
       FROM policies p
       WHERE p.indexed_at IS NOT NULL
       ORDER BY p.policy_number
