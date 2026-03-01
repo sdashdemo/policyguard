@@ -17,8 +17,11 @@ export const maxDuration = 120;
 
 const ORG_ID = 'ars';
 const MAX_RETRIES = 2;
-const VALID_STATUSES = ['COVERED', 'PARTIAL', 'GAP', 'CONFLICTING', 'NOT_APPLICABLE'];
+const VALID_STATUSES = ['COVERED', 'PARTIAL', 'GAP', 'CONFLICTING', 'NOT_APPLICABLE', 'REVIEW_NEEDED'];
 const VALID_CONFIDENCE = ['high', 'medium', 'low'];
+
+// ── Conditional language patterns suggesting obligation may be N/A ──
+const CONDITIONAL_OBLIGATION_PATTERNS = /\b(if the (facility|program|provider)|for (facilities|programs|providers) (that|which|who)|when (providing|operating|offering)|facilities (with|operating|that)|only applicable (to|for|if|when)|does not apply (to|if|when|unless)|limited to facilities)\b/i;
 
 // ── Provision capping constants ──
 const MAX_PROVISIONS_PER_POLICY = 8;
@@ -42,8 +45,25 @@ function capProvisions(candidateContext, obligation, provsByPolicy, provisionSim
   const oblCitation = (obligation.citation || '').toLowerCase().trim();
   const simMap = provisionSimilarityMap || {};
 
+  // ── Dedup provisions across policies by normalized text hash ──
+  // When duplicate policies exist (LD 2.003 / LD-2.003), identical provisions
+  // from both appear in candidates. Keep only the highest-similarity copy.
+  const globalTextSeen = new Map(); // normalized text → { policy_id, prov_id, sim }
   for (const candidate of candidateContext) {
     const allProvs = provsByPolicy[candidate.policy_id] || [];
+    for (const prov of allProvs) {
+      const normText = prov.text.replace(/\s+/g, ' ').trim().toLowerCase();
+      const sim = simMap[prov.id] || 0;
+      const existing = globalTextSeen.get(normText);
+      if (!existing || sim > existing.sim) {
+        globalTextSeen.set(normText, { policy_id: candidate.policy_id, prov_id: prov.id, sim });
+      }
+    }
+  }
+  const dedupWinners = new Set(Array.from(globalTextSeen.values()).map(v => v.prov_id));
+
+  for (const candidate of candidateContext) {
+    const allProvs = (provsByPolicy[candidate.policy_id] || []).filter(p => dedupWinners.has(p.id));
     if (allProvs.length <= MIN_PROVISIONS_PER_POLICY) {
       candidate.provisions = [...allProvs];
       continue;
@@ -296,7 +316,8 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
     // HARD ERROR: reviewed_provision_refs required
     const refs = parsed.reviewed_provision_refs;
     const totalProvisions = candidatePolicies.reduce((sum, c) => sum + (c.provisions?.length || 0), 0);
-    const minRefs = Math.min(2, totalProvisions);
+    // COVERED: one solid provision is enough. PARTIAL: need ≥2 to show what's covered vs missing.
+    const minRefs = parsed.status === 'COVERED' ? 1 : Math.min(2, totalProvisions);
     if (!Array.isArray(refs) || refs.length < minRefs) {
       errors.push(`reviewed_provision_refs required: need >= ${minRefs} entries, got ${Array.isArray(refs) ? refs.length : 0}`);
     }
@@ -375,7 +396,8 @@ export async function GET(req) {
         (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'GAP') as gap,
         (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'CONFLICTING') as conflicting,
         (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NOT_APPLICABLE') as not_applicable,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review,
+        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'REVIEW_NEEDED') as review_needed
     `);
     const row = (result.rows || result)[0];
     return Response.json({ ...row, run_id: effectiveRunId });
@@ -392,25 +414,39 @@ export async function GET(req) {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { map_run_id, facility_id, label, state: runState, scope: runScope } = body;
+    const { map_run_id, facility_id, label, state: runState, scope: runScope, reg_source_ids } = body;
     let runId = map_run_id;
+
+    // Resolve reg_source_ids: explicit list, or look up from run record, or null (all sources)
+    let scopedSourceIds = reg_source_ids || null;
 
     // Create a new run record if no run_id provided
     if (!runId) {
       runId = ulid('run');
       await db.execute(sql`
-        INSERT INTO map_runs (id, org_id, state, scope, label, status, model_id, prompt_version, started_at)
+        INSERT INTO map_runs (id, org_id, state, scope, label, status, model_id, prompt_version, reg_sources_used, started_at)
         VALUES (${runId}, 'ars', ${runState || 'FL'}, ${runScope || 'baseline'}, ${label || `${runState || 'FL'} — prompt v7`}, 'running',
-                ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, NOW())
+                ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, ${scopedSourceIds ? JSON.stringify(scopedSourceIds) : null}, NOW())
         ON CONFLICT (id) DO NOTHING
       `);
+    } else if (!scopedSourceIds) {
+      // Resuming a run — load reg_sources_used from the run record
+      const runRecord = await db.execute(sql`SELECT reg_sources_used FROM map_runs WHERE id = ${runId}`);
+      const runRow = (runRecord.rows || runRecord)[0];
+      if (runRow?.reg_sources_used) {
+        scopedSourceIds = runRow.reg_sources_used;
+      }
     }
 
-    // Find next unassessed obligation FOR THIS RUN (skip excluded)
+    // Find next unassessed obligation FOR THIS RUN (skip excluded, scope to reg sources)
+    const sourceFilter = scopedSourceIds?.length
+      ? sql`AND reg_source_id = ANY(${scopedSourceIds})`
+      : sql``;
     const nextResult = await db.execute(sql`
       SELECT id FROM obligations
       WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
         AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
+        ${sourceFilter}
       ORDER BY reg_source_id, citation
       LIMIT 1
     `);
@@ -427,7 +463,7 @@ export async function POST(req) {
           partial = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'PARTIAL'),
           gaps = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'GAP'),
           not_applicable = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'NOT_APPLICABLE'),
-          needs_legal_review = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW')
+          needs_legal_review = (SELECT count(*) FROM coverage_assessments WHERE map_run_id = ${runId} AND COALESCE(human_status, status) IN ('NEEDS_LEGAL_REVIEW', 'REVIEW_NEEDED'))
         WHERE id = ${runId}
       `);
       return Response.json({ ok: true, done: true, message: 'All obligations assessed', map_run_id: runId });
@@ -498,7 +534,7 @@ export async function POST(req) {
       });
 
       const remaining = await db.execute(sql`
-        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
+        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false) ${sourceFilter}
       `);
       const left = Number((remaining.rows || remaining)[0].c);
 
@@ -574,9 +610,19 @@ export async function POST(req) {
             validated.confidence = 'low';
             validated.gap_detail = `Validation failed after retries: ${errors.join('; ')}`;
           } else if (validated.status === 'NOT_APPLICABLE') {
-            validated.status = 'GAP';
-            validated.confidence = 'low';
-            validated.gap_detail = `NOT_APPLICABLE rejected (validation failed): ${errors.join('; ')}`;
+            // Check if obligation has conditional language suggesting N/A may be correct
+            const oblText = `${obl.requirement || ''} ${obl.citation || ''}`;
+            if (CONDITIONAL_OBLIGATION_PATTERNS.test(oblText)) {
+              validated.status = 'REVIEW_NEEDED';
+              validated.confidence = 'low';
+              validated.gap_detail = `N/A validation failed but obligation appears conditional: ${errors.join('; ')}`;
+              // Preserve the model's original N/A reasoning for human review
+              validated.review_notes = `SUSPECTED_NA — model reason: ${validated.inapplicability_reason || 'none'}`;
+            } else {
+              validated.status = 'GAP';
+              validated.confidence = 'low';
+              validated.gap_detail = `NOT_APPLICABLE rejected (validation failed): ${errors.join('; ')}`;
+            }
             validated.trigger_span = null;
             validated.inapplicability_reason = null;
           } else if (validated.status === 'CONFLICTING') {
@@ -659,7 +705,7 @@ export async function POST(req) {
       vector_score: vectorScore,
       map_run_id: runId, assessed_by: 'llm',
       model_id: MODEL_ID, prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
-      review_notes: reviewFlag ? `[auto] ${reviewFlag}` : null,
+      review_notes: assessment.review_notes || (reviewFlag ? `[auto] ${reviewFlag}` : null),
     });
 
     await logAuditEvent({
@@ -674,7 +720,7 @@ export async function POST(req) {
     });
 
     const remaining = await db.execute(sql`
-      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
+      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false) ${sourceFilter}
     `);
     const left = Number((remaining.rows || remaining)[0].c);
 
