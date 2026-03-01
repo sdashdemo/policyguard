@@ -8,6 +8,15 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
   const [uploadingPolicies, setUploadingPolicies] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
 
+  // ── Run configuration state ──
+  const [showRunConfig, setShowRunConfig] = useState(false);
+  const [regSources, setRegSources] = useState([]);
+  const [selectedSources, setSelectedSources] = useState(new Set());
+  const [runLabel, setRunLabel] = useState('');
+  const [runScope, setRunScope] = useState('');
+  const [facilities, setFacilities] = useState([]);
+  const [selectedFacility, setSelectedFacility] = useState(null);
+
   const refreshPipeline = () => {
     fetch('/api/v6/pipeline')
       .then(r => r.json())
@@ -198,53 +207,124 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
     }
 
     if (stepId === 'assess') {
-      addLog('Starting coverage assessment (hybrid matching + Claude)...');
+      // Show run configuration panel instead of immediately running
+      setRunning(null);
       try {
-        // Get initial stats
-        const statsRes = await fetch('/api/v6/assess');
-        const stats = await statsRes.json();
-        addLog(`${stats.total_obligations} obligations total, ${stats.unassessed} unassessed`);
-
-        let done = false;
-        let runId = null;
-        let totalAssessed = 0;
-        const statusCounts = { COVERED: 0, PARTIAL: 0, GAP: 0, CONFLICTING: 0, NOT_APPLICABLE: 0, NEEDS_LEGAL_REVIEW: 0 };
-
-        while (!done) {
-          try {
-            const res = await fetch('/api/v6/assess', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ map_run_id: runId }),
-            });
-            const data = await res.json();
-            if (!data.ok) {
-              addLog(`  ✗ Error: ${data.error}`);
-              break;
-            }
-            if (data.done) {
-              done = true;
-            } else {
-              if (!runId) runId = data.map_run_id;
-              totalAssessed++;
-              statusCounts[data.status] = (statusCounts[data.status] || 0) + 1;
-              const policyInfo = data.covering_policy ? ` → ${data.covering_policy}` : '';
-              addLog(`  ${data.status === 'COVERED' ? '✓' : data.status === 'GAP' ? '✗' : '◐'} ${data.citation}: ${data.status}${policyInfo} (${data.candidates} candidates) [${data.remaining} left]`);
-            }
-          } catch (err) {
-            addLog(`  ✗ Error: ${err.message}`);
-            break;
-          }
-        }
-        addLog(`✓ Assessment complete: ${totalAssessed} assessed`);
-        addLog(`  COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | N/A: ${statusCounts.NOT_APPLICABLE} | CONFLICTING: ${statusCounts.CONFLICTING} | NEEDS REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW}`);
+        const [srcRes, facRes] = await Promise.all([
+          fetch('/api/v6/extract').then(r => r.json()),
+          fetch('/api/v6/facilities').then(r => r.json()).catch(() => ({ facilities: [] })),
+        ]);
+        const sources = (srcRes.sources || []).map(s => ({
+          ...s,
+          obligation_count: Number(s.obligation_count),
+        }));
+        setRegSources(sources);
+        setFacilities(facRes.facilities || []);
+        // Pre-select sources with obligations
+        setSelectedSources(new Set(sources.filter(s => s.obligation_count > 0).map(s => s.id)));
+        setRunLabel('');
+        setRunScope('');
+        setSelectedFacility(null);
+        setShowRunConfig(true);
       } catch (err) {
-        addLog(`✗ Assessment error: ${err.message}`);
+        addLog(`✗ Failed to load run config: ${err.message}`);
       }
+      return;
     }
 
     setRunning(null);
     refreshPipeline();
+  };
+
+  // ── Start a configured assessment run ──
+  const startAssessRun = async () => {
+    const sourceIds = Array.from(selectedSources);
+    if (sourceIds.length === 0) {
+      addLog('✗ No regulatory sources selected');
+      return;
+    }
+
+    const sourceNames = regSources
+      .filter(s => selectedSources.has(s.id))
+      .map(s => `${s.citation_root || s.name} (${s.obligation_count})`)
+      .join(', ');
+    const totalObligations = regSources
+      .filter(s => selectedSources.has(s.id))
+      .reduce((sum, s) => sum + s.obligation_count, 0);
+
+    const label = runLabel || `Run — ${sourceNames}`;
+    const scope = runScope || 'assessment';
+
+    setShowRunConfig(false);
+    setRunning('assess');
+    addLog(`Starting assessment: ${totalObligations} obligations from ${sourceIds.length} sources`);
+    addLog(`  Sources: ${sourceNames}`);
+    addLog(`  Label: ${label}`);
+
+    try {
+      const statsRes = await fetch('/api/v6/assess');
+      const stats = await statsRes.json();
+      addLog(`${stats.total_obligations} total obligations in DB, running scoped subset`);
+
+      let done = false;
+      let runId = null;
+      let totalAssessed = 0;
+      const statusCounts = { COVERED: 0, PARTIAL: 0, GAP: 0, CONFLICTING: 0, NOT_APPLICABLE: 0, NEEDS_LEGAL_REVIEW: 0, REVIEW_NEEDED: 0 };
+
+      while (!done) {
+        try {
+          const reqBody = runId
+            ? { map_run_id: runId }
+            : {
+                state: regSources.find(s => selectedSources.has(s.id))?.state || 'FL',
+                scope,
+                label,
+                facility_id: selectedFacility || undefined,
+                reg_source_ids: sourceIds,
+              };
+
+          const res = await fetch('/api/v6/assess', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reqBody),
+          });
+          const data = await res.json();
+          if (!data.ok) {
+            addLog(`  ✗ Error: ${data.error}`);
+            break;
+          }
+          if (data.done) {
+            done = true;
+          } else {
+            if (!runId) runId = data.map_run_id;
+            totalAssessed++;
+            statusCounts[data.status] = (statusCounts[data.status] || 0) + 1;
+            const policyInfo = data.covering_policy ? ` → ${data.covering_policy}` : '';
+            addLog(`  ${data.status === 'COVERED' ? '✓' : data.status === 'GAP' ? '✗' : '◐'} ${data.citation}: ${data.status}${policyInfo} (${data.candidates} candidates) [${data.remaining} left]`);
+          }
+        } catch (err) {
+          addLog(`  ✗ Error: ${err.message}`);
+          break;
+        }
+      }
+      addLog(`✓ Assessment complete: ${totalAssessed} assessed`);
+      addLog(`  COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | N/A: ${statusCounts.NOT_APPLICABLE} | CONFLICTING: ${statusCounts.CONFLICTING} | REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW + statusCounts.REVIEW_NEEDED}`);
+    } catch (err) {
+      addLog(`✗ Assessment error: ${err.message}`);
+    }
+
+    setRunning(null);
+    refreshPipeline();
+  };
+
+  // ── Toggle reg source selection ──
+  const toggleSource = (id) => {
+    setSelectedSources(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   if (loading) return <Spinner />;
@@ -285,6 +365,74 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
           </div>
         ))}
       </div>
+
+      {/* Run configuration modal */}
+      {showRunConfig && (
+        <div className="card p-4 space-y-4 border-2 border-amber-400">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold">Configure Assessment Run</p>
+            <button onClick={() => setShowRunConfig(false)} className="text-xs text-stone-400 hover:text-stone-600">Cancel</button>
+          </div>
+
+          {/* Reg source selection */}
+          <div>
+            <p className="text-xs font-medium text-stone-500 uppercase tracking-wider mb-2">Regulatory Sources</p>
+            <div className="space-y-1.5">
+              {regSources.filter(s => s.obligation_count > 0).map(src => (
+                <label key={src.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedSources.has(src.id)}
+                    onChange={() => toggleSource(src.id)}
+                    className="rounded border-stone-300"
+                  />
+                  <span className="flex-1">{src.name}</span>
+                  <span className="text-xs text-stone-400">{src.obligation_count} obligations</span>
+                  <span className="text-xs text-stone-400 w-12 text-right">{src.state || 'Fed'}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-stone-400 mt-2">
+              Selected: {selectedSources.size} sources, {regSources.filter(s => selectedSources.has(s.id)).reduce((sum, s) => sum + s.obligation_count, 0)} obligations
+            </p>
+          </div>
+
+          {/* Run label and scope */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-stone-500">Run Label</label>
+              <input
+                type="text"
+                value={runLabel}
+                onChange={(e) => setRunLabel(e.target.value)}
+                placeholder="e.g., FL v2 — SUD only"
+                className="w-full mt-1 px-2 py-1.5 text-sm border border-stone-300 rounded"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-stone-500">Scope Tag</label>
+              <input
+                type="text"
+                value={runScope}
+                onChange={(e) => setRunScope(e.target.value)}
+                placeholder="e.g., v2_sud"
+                className="w-full mt-1 px-2 py-1.5 text-sm border border-stone-300 rounded"
+              />
+            </div>
+          </div>
+
+          {/* Start button */}
+          <div className="flex justify-end">
+            <button
+              onClick={startAssessRun}
+              disabled={selectedSources.size === 0}
+              className="px-4 py-2 bg-stone-900 text-white text-sm rounded hover:bg-stone-800 disabled:opacity-50"
+            >
+              Start Run ({regSources.filter(s => selectedSources.has(s.id)).reduce((sum, s) => sum + s.obligation_count, 0)} obligations)
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Upload: Regulatory Sources */}
       <div className="card p-4 space-y-3">
@@ -336,4 +484,3 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
 }
 
 // ─── CSV EXPORT ─────────────────────────────────────────────
-
