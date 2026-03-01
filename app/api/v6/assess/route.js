@@ -440,7 +440,7 @@ export async function POST(req) {
 
     // Find next unassessed obligation FOR THIS RUN (skip excluded, scope to reg sources)
     const sourceFilter = scopedSourceIds?.length
-      ? sql`AND reg_source_id = ANY(${scopedSourceIds})`
+      ? sql`AND reg_source_id IN (${sql.join(scopedSourceIds.map(id => sql`${id}`), sql`, `)})`
       : sql``;
     const nextResult = await db.execute(sql`
       SELECT id FROM obligations
