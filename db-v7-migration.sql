@@ -10,15 +10,27 @@ ALTER TABLE coverage_assessments ADD COLUMN IF NOT EXISTS conflict_detail text;
 ALTER TABLE coverage_assessments ADD COLUMN IF NOT EXISTS reviewed_provision_refs jsonb;
 ALTER TABLE coverage_assessments ADD COLUMN IF NOT EXISTS covering_policy_number text;
 
--- 2. Update effective_status generated column to include NOT_APPLICABLE
--- (The existing generated column already uses COALESCE(human_status, status)
---  which will automatically work with any status value including NOT_APPLICABLE.
---  No change needed — this is a confirmation note.)
+-- 2. Add JSONB attributes column to facility_profiles
+-- This replaces the individual boolean columns (prohibits_restraint, operates_otp, etc.)
+-- with a dynamic key-value model. See lib/facility-attributes.js for the registry.
+ALTER TABLE facility_profiles ADD COLUMN IF NOT EXISTS attributes jsonb DEFAULT '{}';
 
--- 3. Ensure the review route accepts NOT_APPLICABLE as a valid human_status
--- (Already handled in code — review/route.js line 14 already includes NOT_APPLICABLE)
+-- 3. Backfill attributes JSONB from existing boolean columns
+-- This is safe to run multiple times — it only sets keys that don't already exist.
+UPDATE facility_profiles
+SET attributes = COALESCE(attributes, '{}'::jsonb)
+  || jsonb_build_object(
+    'prohibits_restraint', COALESCE(prohibits_restraint, true),
+    'operates_otp', COALESCE(operates_otp, false),
+    'smoking_in_buildings', COALESCE(smoking_in_buildings_allowed, false),
+    'patient_work_program', COALESCE(allows_patient_work_program, false)
+  )
+WHERE attributes IS NULL OR attributes = '{}'::jsonb;
 
--- 4. Add indexes for the new status values (optional, for query performance)
+-- 4. Verify backfill
+-- SELECT abbreviation, state, attributes FROM facility_profiles ORDER BY state, abbreviation;
+
+-- 5. Indexes for new status values
 CREATE INDEX IF NOT EXISTS idx_ca_not_applicable
   ON coverage_assessments (map_run_id)
   WHERE status = 'NOT_APPLICABLE';
@@ -27,30 +39,11 @@ CREATE INDEX IF NOT EXISTS idx_ca_review_notes
   ON coverage_assessments (map_run_id)
   WHERE review_notes IS NOT NULL;
 
--- 5. Verify facility toggle columns exist (from Part 2 of db-pre-implementation.sql)
--- These should already exist — this is idempotent
-ALTER TABLE facility_profiles ADD COLUMN IF NOT EXISTS smoking_in_buildings_allowed boolean;
-ALTER TABLE facility_profiles ADD COLUMN IF NOT EXISTS allows_patient_work_program boolean;
-ALTER TABLE facility_profiles ADD COLUMN IF NOT EXISTS operates_otp boolean;
+-- NOTE: The legacy boolean columns (prohibits_restraint, smoking_in_buildings_allowed,
+-- allows_patient_work_program, operates_otp) are kept for backward compatibility.
+-- The code reads from facility.attributes via the dynamic registry.
+-- These columns can be dropped in a future migration once all code paths use attributes.
 
--- 6. Set facility toggle values for FL facilities
--- IMPORTANT: Review these values with Sam before executing.
--- All ARS FL facilities prohibit restraint, prohibit smoking in buildings,
--- do not have patient work programs. OTP status per facility:
--- ORC, TRV, RVPB are OTP facilities (no methadone per briefing).
-
--- Example (update facility IDs to match actual data):
--- UPDATE facility_profiles SET
---   smoking_in_buildings_allowed = false,
---   allows_patient_work_program = false,
---   operates_otp = true,
---   prohibits_restraint = true
--- WHERE abbreviation IN ('ORC', 'TRV', 'RVPB');
-
--- UPDATE facility_profiles SET
---   smoking_in_buildings_allowed = false,
---   allows_patient_work_program = false,
---   operates_otp = false,
---   prohibits_restraint = true
--- WHERE abbreviation IN ('RVA', 'RVSA', 'RVCH')
---   OR abbreviation NOT IN ('ORC', 'TRV', 'RVPB');
+-- 6. Add exclude_from_assessment to obligations (skip junk/admin items)
+ALTER TABLE obligations ADD COLUMN IF NOT EXISTS exclude_from_assessment boolean DEFAULT false;
+ALTER TABLE obligations ADD COLUMN IF NOT EXISTS exclude_reason text;

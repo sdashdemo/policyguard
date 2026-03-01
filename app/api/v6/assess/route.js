@@ -4,6 +4,10 @@ import { policies, provisions, obligations, subDomainLabels, coverageAssessments
 import { eq, sql } from 'drizzle-orm';
 import { findCandidatesHybrid, HIGH_RISK_TOPICS } from '@/lib/matching';
 import { ASSESS_PROMPT } from '@/lib/prompts';
+import {
+  buildFacilityContextString, findTriggerFamily, reasonMatchesFamily,
+  reasonHasNegation, BOILERPLATE_BLACKLIST, LOC_KEYWORDS
+} from '@/lib/facility-attributes';
 import { logAuditEvent, PROMPT_VERSIONS, MODEL_ID } from '@/lib/audit';
 import { ulid } from '@/lib/ulid';
 import { parseJSON } from '@/lib/parse';
@@ -22,62 +26,21 @@ const MAX_TOTAL_PROVISIONS = 96;
 const MIN_PROVISIONS_PER_POLICY = 4;
 const MAX_CITATION_PINNED_PER_POLICY = 2;
 
-// ── N/A validation constants ──
-const BOILERPLATE_BLACKLIST = new Set([
-  'Not specified',
-  'None specified',
-  'No',
-  'YES',
-  'Services Excluded: None specified',
-  'Smoking Policy: Not specified',
-  'Accreditations: Not specified',
-]);
-
-const LOW_INFO_TOKENS = new Set([
-  'program', 'facility', 'policy', 'organization', 'services', 'service',
-  'provided', 'required', 'shall', 'must', 'will', 'include', 'ensure',
-  'maintain', 'process', 'procedure', 'documentation', 'applicable',
-  'appropriate', 'criteria', 'standard', 'individuals', 'staff', 'patients',
-  'residents', 'client', 'clients', 'person', 'persons', 'records', 'record',
-  'the', 'a', 'an', 'and', 'or', 'of', 'in', 'to', 'for', 'is', 'are',
-  'be', 'by', 'with', 'that', 'this', 'from', 'at', 'on', 'as', 'not',
-  'all', 'each', 'any', 'has', 'have', 'been', 'their', 'its', 'may',
-]);
-
-// Synonym families for N/A validation — bidirectional lookup
-const SYNONYM_FAMILIES = {
-  restraint: ['restraint', 'seclusion', 'physical intervention', 'physical interventions'],
-  smoking: ['smoking', 'tobacco', 'vaping', 'smoke'],
-  otp: ['otp', 'methadone', 'opioid treatment program', 'opioid treatment'],
-  work: ['work', 'employment', 'labor', 'wages', 'vocational'],
-};
-
-// Known LOC keywords for Path A validation
-const LOC_KEYWORDS = new Set([
-  'residential', 'php', 'iop', 'op', 'outpatient', 'detox',
-  'inpatient', 'mh_rtf', 'day/night', 'day treatment',
-]);
-
-// Admin/process markers for Rule 10 stopgap
+// ── N/A validation: admin/process markers (not attribute-dependent) ──
 const ADMIN_MARKERS = [
   /submit.*report/i, /\bESC\b/, /accreditation committee/i,
   /survey submission/i, /submission to the joint commission/i,
   /accreditation.*process/i,
 ];
 
-// Negation markers for Path B (activity-based N/A)
-const NEGATION_MARKERS = [
-  'prohibit', 'does not', 'no —', 'not operate', 'not permitted',
-  'excluded', 'prohibited', 'all physical interventions prohibited',
-];
-
 
 // ═══════════════════════════════════════════════════════
-// Provision capping with citation-pinned bypass (hot-fix 2a)
+// Provision capping with citation-pinned bypass + similarity ranking
 // ═══════════════════════════════════════════════════════
 
-function capProvisions(candidateContext, obligation, provsByPolicy) {
+function capProvisions(candidateContext, obligation, provsByPolicy, provisionSimilarityMap) {
   const oblCitation = (obligation.citation || '').toLowerCase().trim();
+  const simMap = provisionSimilarityMap || {};
 
   for (const candidate of candidateContext) {
     const allProvs = provsByPolicy[candidate.policy_id] || [];
@@ -86,7 +49,7 @@ function capProvisions(candidateContext, obligation, provsByPolicy) {
       continue;
     }
 
-    // 1. Citation-pinned provisions bypass vector ranking
+    // 1. Citation-pinned provisions bypass ranking
     const citationPinned = [];
     const unpinned = [];
     for (const prov of allProvs) {
@@ -100,15 +63,20 @@ function capProvisions(candidateContext, obligation, provsByPolicy) {
     const pinnedToUse = citationPinned.slice(0, MAX_CITATION_PINNED_PER_POLICY);
     const pinnedIds = new Set(pinnedToUse.map(p => p.id));
 
-    // 2. Fill remaining slots from unpinned provisions (DB order = section order)
-    const remaining = unpinned.filter(p => !pinnedIds.has(p.id));
+    // 2. Rank remaining provisions by vector similarity (descending)
+    // Provisions without a similarity score get 0 (lowest priority)
+    const remaining = unpinned
+      .filter(p => !pinnedIds.has(p.id))
+      .map(p => ({ ...p, _sim: simMap[p.id] || 0 }))
+      .sort((a, b) => b._sim - a._sim);
+
     const slots = Math.max(MIN_PROVISIONS_PER_POLICY, MAX_PROVISIONS_PER_POLICY) - pinnedToUse.length;
     const topRemaining = remaining.slice(0, Math.max(0, slots));
 
     candidate.provisions = [...pinnedToUse, ...topRemaining];
   }
 
-  // Global cap: if total exceeds MAX_TOTAL, trim from largest candidates first
+  // Global cap: if total exceeds MAX_TOTAL, trim lowest-similarity provisions from largest candidates
   let total = candidateContext.reduce((sum, c) => sum + c.provisions.length, 0);
   while (total > MAX_TOTAL_PROVISIONS) {
     let maxIdx = -1;
@@ -120,6 +88,7 @@ function capProvisions(candidateContext, obligation, provsByPolicy) {
       }
     }
     if (maxIdx === -1) break;
+    // Remove last provision (lowest similarity, since sorted descending)
     candidateContext[maxIdx].provisions.pop();
     total--;
   }
@@ -173,19 +142,8 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
     ? (Array.isArray(obligation.loc_applicability) ? obligation.loc_applicability.join(', ') : String(obligation.loc_applicability))
     : '';
 
-  // Build facility context string for substring validation
-  const facilityContextBlock = facility ? [
-    `Facility: ${facility.name} (${facility.abbreviation})`,
-    `State: ${facility.state}`,
-    `Levels of Care: ${facility.levels_of_care?.join(', ') || 'Not specified'}`,
-    `Services Offered: ${facility.services_offered?.join(', ') || 'Not specified'}`,
-    `Services Excluded: ${facility.services_excluded?.join(', ') || 'None specified'}`,
-    `Accreditations: ${facility.accreditations?.join(', ') || 'Not specified'}`,
-    `Prohibits Restraint/Seclusion: ${facility.prohibits_restraint ? 'YES — all physical interventions prohibited by policy' : 'No'}`,
-    `OTP/Methadone: ${facility.operates_otp ? 'YES' : 'NO — facility does not operate an OTP or dispense methadone'}`,
-    `Smoking Policy: ${facility.smoking_in_buildings_allowed ? 'Smoking permitted in buildings' : facility.smoking_in_buildings_allowed === false ? 'NO — smoking prohibited in all buildings' : 'Not specified'}`,
-    `Patient Work Program: ${facility.allows_patient_work_program ? 'YES' : facility.allows_patient_work_program === false ? 'NO — facility does not operate patient work programs' : 'Not specified'}`,
-  ].join('\n') : '';
+  // Build facility context string for substring validation (from dynamic registry)
+  const facilityContextBlock = buildFacilityContextString(facility);
 
   const allProvTexts = allProvisionTexts || [];
 
@@ -238,9 +196,8 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
         errors.push(`trigger_span too short (${parsed.trigger_span.length} chars, need >= 8)`);
       }
 
-      // ── Three-path N/A validation (red-team hot-fixes 1a/1b/1c) ──
+      // ── Three-path N/A validation (using dynamic attribute registry) ──
       const triggerLower = parsed.trigger_span.toLowerCase();
-      const reasonLower = parsed.inapplicability_reason.toLowerCase();
 
       // Determine which path applies
       const triggerHasLOC = [...LOC_KEYWORDS].some(k => triggerLower.includes(k))
@@ -252,7 +209,6 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
         const facilityLOCs = (facility?.levels_of_care || []).map(l => l.toLowerCase());
         const triggerLOCTokens = [...LOC_KEYWORDS].filter(k => triggerLower.includes(k));
 
-        // Also include LOC Applicability values if trigger came from that line
         const locValues = obligation.loc_applicability
           ? (Array.isArray(obligation.loc_applicability) ? obligation.loc_applicability : [obligation.loc_applicability])
           : [];
@@ -266,32 +222,21 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
         }
 
       } else {
-        // Check known activity families
-        let triggerFamily = null;
-        for (const [family, synonyms] of Object.entries(SYNONYM_FAMILIES)) {
-          if (synonyms.some(s => triggerLower.includes(s))) {
-            triggerFamily = family;
-            break;
-          }
-        }
+        // Look up trigger in the dynamic attribute registry
+        const match = findTriggerFamily(parsed.trigger_span);
 
-        if (triggerFamily) {
-          // PATH B — Activity-based N/A
-          // Require synonym overlap with the same family
-          const familySynonyms = SYNONYM_FAMILIES[triggerFamily];
-          const reasonHasFamilyToken = familySynonyms.some(s => reasonLower.includes(s));
-          if (!reasonHasFamilyToken) {
-            errors.push(`Activity N/A: inapplicability_reason lacks token from ${triggerFamily} family (${familySynonyms.join(', ')})`);
+        if (match) {
+          // PATH B — Activity-based N/A (registry-driven)
+          if (!reasonMatchesFamily(parsed.inapplicability_reason, match.def)) {
+            errors.push(`Activity N/A: inapplicability_reason lacks token from ${match.key} family (${match.def.trigger_family.join(', ')})`);
           }
-          // Require negation marker in evidence
-          const hasNegation = NEGATION_MARKERS.some(m => reasonLower.includes(m));
-          if (!hasNegation) {
+          if (match.def.negation_required && !reasonHasNegation(parsed.inapplicability_reason)) {
             errors.push('Activity N/A: inapplicability_reason lacks negation marker (prohibit, does not, NO —, etc.)');
           }
 
         } else {
           // PATH C — Unknown trigger: reject N/A entirely
-          errors.push('NOT_APPLICABLE rejected: trigger does not match known LOC or activity family (restraint/smoking/otp/work)');
+          errors.push('NOT_APPLICABLE rejected: trigger does not match known LOC or any registered attribute family');
         }
       }
     }
@@ -337,13 +282,23 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
     } else if (!candidatePolicyNumbers.has(parsed.covering_policy_number)) {
       errors.push(`covering_policy_number "${parsed.covering_policy_number}" not in candidates`);
     }
-    if (parsed.obligation_span && !requirementText.includes(parsed.obligation_span)) {
-      warnings.push('obligation_span not exact substring of Requirement (non-blocking)');
+    // HARD ERRORS: anchor spans must be exact substrings
+    if (!parsed.obligation_span) {
+      errors.push(`${parsed.status} requires obligation_span`);
+    } else if (!requirementText.includes(parsed.obligation_span)) {
+      errors.push('obligation_span not exact substring of Requirement');
     }
-    if (parsed.provision_span) {
-      if (!allProvTexts.some(t => t.includes(parsed.provision_span))) {
-        warnings.push('provision_span not exact substring of any presented provision (non-blocking)');
-      }
+    if (!parsed.provision_span) {
+      errors.push(`${parsed.status} requires provision_span`);
+    } else if (!allProvTexts.some(t => t.includes(parsed.provision_span))) {
+      errors.push('provision_span not exact substring of any presented provision');
+    }
+    // HARD ERROR: reviewed_provision_refs required
+    const refs = parsed.reviewed_provision_refs;
+    const totalProvisions = candidatePolicies.reduce((sum, c) => sum + (c.provisions?.length || 0), 0);
+    const minRefs = Math.min(2, totalProvisions);
+    if (!Array.isArray(refs) || refs.length < minRefs) {
+      errors.push(`reviewed_provision_refs required: need >= ${minRefs} entries, got ${Array.isArray(refs) ? refs.length : 0}`);
     }
   }
 
@@ -360,17 +315,9 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
   }
 
 
-  // ═══════════════════════════════════════════════════════
-  // reviewed_provision_refs validation
-  // ═══════════════════════════════════════════════════════
-
-  if (['COVERED', 'PARTIAL', 'CONFLICTING'].includes(parsed.status)) {
+  // reviewed_provision_refs format check (non-blocking) for CONFLICTING
+  if (parsed.status === 'CONFLICTING') {
     const refs = parsed.reviewed_provision_refs;
-    const totalProvisions = candidatePolicies.reduce((sum, c) => sum + (c.provisions?.length || 0), 0);
-    const minRefs = Math.min(2, totalProvisions);
-    if (!Array.isArray(refs) || refs.length < minRefs) {
-      warnings.push(`reviewed_provision_refs should have >= ${minRefs} entries`);
-    }
     if (Array.isArray(refs)) {
       const refPattern = /^[A-Za-z0-9._\- ]+\[\d+\]$/;
       for (const ref of refs) {
@@ -445,7 +392,7 @@ export async function GET(req) {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { map_run_id, facility_id, label } = body;
+    const { map_run_id, facility_id, label, state: runState, scope: runScope } = body;
     let runId = map_run_id;
 
     // Create a new run record if no run_id provided
@@ -453,16 +400,17 @@ export async function POST(req) {
       runId = ulid('run');
       await db.execute(sql`
         INSERT INTO map_runs (id, org_id, state, scope, label, status, model_id, prompt_version, started_at)
-        VALUES (${runId}, 'ars', 'FL', 'baseline', ${label || 'FL v2 — prompt v7'}, 'running',
+        VALUES (${runId}, 'ars', ${runState || 'FL'}, ${runScope || 'baseline'}, ${label || `${runState || 'FL'} — prompt v7`}, 'running',
                 ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, NOW())
         ON CONFLICT (id) DO NOTHING
       `);
     }
 
-    // Find next unassessed obligation FOR THIS RUN
+    // Find next unassessed obligation FOR THIS RUN (skip excluded)
     const nextResult = await db.execute(sql`
       SELECT id FROM obligations
       WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
+        AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
       ORDER BY reg_source_id, citation
       LIMIT 1
     `);
@@ -497,10 +445,30 @@ export async function POST(req) {
       facility = f || null;
     }
     if (!facility) {
+      const facilityState = runState || 'FL';
       const fResult = await db.execute(sql`
-        SELECT * FROM facility_profiles WHERE state = 'FL' ORDER BY name LIMIT 1
+        SELECT * FROM facility_profiles WHERE state = ${facilityState} ORDER BY name LIMIT 1
       `);
       facility = (fResult.rows || fResult)?.[0] || null;
+    }
+
+    // Compatibility: merge legacy boolean columns into attributes JSONB
+    // if attributes is empty (pre-migration) or missing keys
+    if (facility) {
+      const attrs = facility.attributes || {};
+      if (attrs.prohibits_restraint === undefined && facility.prohibits_restraint !== undefined) {
+        attrs.prohibits_restraint = facility.prohibits_restraint;
+      }
+      if (attrs.operates_otp === undefined && facility.operates_otp !== undefined) {
+        attrs.operates_otp = facility.operates_otp;
+      }
+      if (attrs.smoking_in_buildings === undefined && facility.smoking_in_buildings_allowed !== undefined) {
+        attrs.smoking_in_buildings = facility.smoking_in_buildings_allowed;
+      }
+      if (attrs.patient_work_program === undefined && facility.allows_patient_work_program !== undefined) {
+        attrs.patient_work_program = facility.allows_patient_work_program;
+      }
+      facility.attributes = attrs;
     }
 
     // Load matching data
@@ -514,8 +482,8 @@ export async function POST(req) {
       provsByPolicy[prov.policy_id].push(prov);
     }
 
-    // Run hybrid matching
-    const candidates = await findCandidatesHybrid(obl, allPolicies, allProvisions, allLabels);
+    // Run hybrid matching — returns { candidates, provisionSimilarityMap }
+    const { candidates, provisionSimilarityMap } = await findCandidatesHybrid(obl, allPolicies, allProvisions, allLabels);
 
     if (candidates.length === 0) {
       const assessId = ulid('ca');
@@ -530,7 +498,7 @@ export async function POST(req) {
       });
 
       const remaining = await db.execute(sql`
-        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
+        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
       `);
       const left = Number((remaining.rows || remaining)[0].c);
 
@@ -549,7 +517,7 @@ export async function POST(req) {
       provisions: (provsByPolicy[c.policy_id] || []),
     }));
 
-    candidateContext = capProvisions(candidateContext, obl, provsByPolicy);
+    candidateContext = capProvisions(candidateContext, obl, provsByPolicy, provisionSimilarityMap);
 
     // Collect all provision texts for validation
     const allProvisionTexts = candidateContext.flatMap(c =>
@@ -573,7 +541,7 @@ export async function POST(req) {
 
         const message = await client.messages.create({
           model: MODEL_ID,
-          max_tokens: 1024,
+          max_tokens: 1536,
           messages: [{ role: 'user', content: promptContent }],
         });
 
@@ -706,7 +674,7 @@ export async function POST(req) {
     });
 
     const remaining = await db.execute(sql`
-      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
+      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
     `);
     const left = Number((remaining.rows || remaining)[0].c);
 
