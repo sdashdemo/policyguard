@@ -38,9 +38,10 @@ const ADMIN_MARKERS = [
 // Provision capping with citation-pinned bypass + similarity ranking
 // ═══════════════════════════════════════════════════════
 
-function capProvisions(candidateContext, obligation, provsByPolicy, provisionSimilarityMap) {
+function capProvisions(candidateContext, obligation, provsByPolicy, provisionSimilarityMap, provisionKeywordOverlapMap) {
   const oblCitation = (obligation.citation || '').toLowerCase().trim();
   const simMap = provisionSimilarityMap || {};
+  const keywordMap = provisionKeywordOverlapMap || {};
 
   for (const candidate of candidateContext) {
     const allProvs = provsByPolicy[candidate.policy_id] || [];
@@ -63,20 +64,51 @@ function capProvisions(candidateContext, obligation, provsByPolicy, provisionSim
     const pinnedToUse = citationPinned.slice(0, MAX_CITATION_PINNED_PER_POLICY);
     const pinnedIds = new Set(pinnedToUse.map(p => p.id));
 
-    // 2. Rank remaining provisions by vector similarity (descending)
-    // Provisions without a similarity score get 0 (lowest priority)
+    // 2. Rank remaining provisions by BOTH semantic similarity and keyword overlap.
+    // This prevents high-overlap paragraphs from getting pruned when vectors miss them.
     const remaining = unpinned
       .filter(p => !pinnedIds.has(p.id))
-      .map(p => ({ ...p, _sim: simMap[p.id] || 0 }))
-      .sort((a, b) => b._sim - a._sim);
+      .map(p => ({
+        ...p,
+        _sim: Number(simMap[p.id] || 0),
+        _kw: Number(keywordMap[p.id] || 0),
+      }));
 
     const slots = Math.max(MIN_PROVISIONS_PER_POLICY, MAX_PROVISIONS_PER_POLICY) - pinnedToUse.length;
-    const topRemaining = remaining.slice(0, Math.max(0, slots));
+    const bySemantic = [...remaining].sort((a, b) => b._sim - a._sim || b._kw - a._kw);
+    const byKeyword = [...remaining].sort((a, b) => b._kw - a._kw || b._sim - a._sim);
+    const selected = [];
+    const selectedIds = new Set();
 
-    candidate.provisions = [...pinnedToUse, ...topRemaining];
+    function takeFrom(list, maxToTake) {
+      let taken = 0;
+      for (const prov of list) {
+        if (selected.length >= slots || taken >= maxToTake) break;
+        if (selectedIds.has(prov.id)) continue;
+        selected.push(prov);
+        selectedIds.add(prov.id);
+        taken++;
+      }
+    }
+
+    const semanticReserve = Math.min(2, Math.max(0, slots));
+    const keywordReserve = Math.min(2, Math.max(0, slots - semanticReserve));
+    takeFrom(bySemantic, semanticReserve);
+    takeFrom(byKeyword, keywordReserve);
+    takeFrom(bySemantic, Math.max(0, slots - selected.length));
+
+    // Keep lowest-value items last so global trimming can pop safely.
+    selected.sort((a, b) => {
+      const aPrimary = Math.max(a._sim, a._kw);
+      const bPrimary = Math.max(b._sim, b._kw);
+      if (bPrimary !== aPrimary) return bPrimary - aPrimary;
+      return (b._sim + b._kw) - (a._sim + a._kw);
+    });
+
+    candidate.provisions = [...pinnedToUse, ...selected];
   }
 
-  // Global cap: if total exceeds MAX_TOTAL, trim lowest-similarity provisions from largest candidates
+  // Global cap: if total exceeds MAX_TOTAL, trim lowest-ranked provisions from largest candidates
   let total = candidateContext.reduce((sum, c) => sum + c.provisions.length, 0);
   while (total > MAX_TOTAL_PROVISIONS) {
     let maxIdx = -1;
@@ -88,7 +120,7 @@ function capProvisions(candidateContext, obligation, provsByPolicy, provisionSim
       }
     }
     if (maxIdx === -1) break;
-    // Remove last provision (lowest similarity, since sorted descending)
+    // Remove last provision (lowest rank, since lists are sorted descending)
     candidateContext[maxIdx].provisions.pop();
     total--;
   }
@@ -359,23 +391,23 @@ export async function GET(req) {
       effectiveRunId = (latest.rows || latest)?.[0]?.id || null;
     }
 
-    const runFilter = effectiveRunId
-      ? sql`WHERE map_run_id = ${effectiveRunId}`
-      : sql``;
+    const runCondition = effectiveRunId
+      ? sql`map_run_id = ${effectiveRunId}`
+      : sql`TRUE`;
 
     const result = await db.execute(sql`
       SELECT
         (SELECT count(*) FROM obligations) as total_obligations,
-        (SELECT count(DISTINCT obligation_id) FROM coverage_assessments ${runFilter}) as assessed,
+        (SELECT count(DISTINCT obligation_id) FROM coverage_assessments WHERE ${runCondition}) as assessed,
         (SELECT count(*) FROM obligations WHERE id NOT IN (
-          SELECT obligation_id FROM coverage_assessments ${runFilter}
+          SELECT obligation_id FROM coverage_assessments WHERE ${runCondition}
         )) as unassessed,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'COVERED') as covered,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'PARTIAL') as partial,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'GAP') as gap,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'CONFLICTING') as conflicting,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NOT_APPLICABLE') as not_applicable,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'COVERED') as covered,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'PARTIAL') as partial,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'GAP') as gap,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'CONFLICTING') as conflicting,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'NOT_APPLICABLE') as not_applicable,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review
     `);
     const row = (result.rows || result)[0];
     return Response.json({ ...row, run_id: effectiveRunId });
@@ -483,7 +515,8 @@ export async function POST(req) {
     }
 
     // Run hybrid matching — returns { candidates, provisionSimilarityMap }
-    const { candidates, provisionSimilarityMap } = await findCandidatesHybrid(obl, allPolicies, allProvisions, allLabels);
+    const { candidates, provisionSimilarityMap, provisionKeywordOverlapMap } =
+      await findCandidatesHybrid(obl, allPolicies, allProvisions, allLabels);
 
     if (candidates.length === 0) {
       const assessId = ulid('ca');
@@ -517,7 +550,13 @@ export async function POST(req) {
       provisions: (provsByPolicy[c.policy_id] || []),
     }));
 
-    candidateContext = capProvisions(candidateContext, obl, provsByPolicy, provisionSimilarityMap);
+    candidateContext = capProvisions(
+      candidateContext,
+      obl,
+      provsByPolicy,
+      provisionSimilarityMap,
+      provisionKeywordOverlapMap
+    );
 
     // Collect all provision texts for validation
     const allProvisionTexts = candidateContext.flatMap(c =>
