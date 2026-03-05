@@ -375,36 +375,41 @@ export async function GET(req) {
     let effectiveRunId = runId;
     if (!effectiveRunId) {
       const latest = await db.execute(sql`
-        SELECT id FROM map_runs ORDER BY (status = 'completed') DESC, started_at DESC LIMIT 1
+        SELECT id
+        FROM map_runs
+        ORDER BY (status = 'completed') DESC, started_at DESC
+        LIMIT 1
       `);
       effectiveRunId = (latest.rows || latest)?.[0]?.id || null;
     }
 
-    const runFilter = effectiveRunId
-      ? sql`WHERE map_run_id = ${effectiveRunId}`
-      : sql``;
+    const runCondition = effectiveRunId
+      ? sql`map_run_id = ${effectiveRunId}`
+      : sql`TRUE`;
 
     const result = await db.execute(sql`
       SELECT
         (SELECT count(*) FROM obligations) as total_obligations,
-        (SELECT count(DISTINCT obligation_id) FROM coverage_assessments ${runFilter}) as assessed,
+        (SELECT count(DISTINCT obligation_id) FROM coverage_assessments WHERE ${runCondition}) as assessed,
         (SELECT count(*) FROM obligations WHERE id NOT IN (
-          SELECT obligation_id FROM coverage_assessments ${runFilter}
+          SELECT obligation_id FROM coverage_assessments WHERE ${runCondition}
         )) as unassessed,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'COVERED') as covered,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'PARTIAL') as partial,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'GAP') as gap,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'CONFLICTING') as conflicting,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NOT_APPLICABLE') as not_applicable,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review,
-        (SELECT count(*) FROM coverage_assessments ${runFilter} WHERE COALESCE(human_status, status) = 'REVIEW_NEEDED') as review_needed
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'COVERED') as covered,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'PARTIAL') as partial,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'GAP') as gap,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'CONFLICTING') as conflicting,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'NOT_APPLICABLE') as not_applicable,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'NEEDS_LEGAL_REVIEW') as needs_review,
+        (SELECT count(*) FROM coverage_assessments WHERE ${runCondition} AND COALESCE(human_status, status) = 'REVIEW_NEEDED') as review_needed
     `);
+
     const row = (result.rows || result)[0];
     return Response.json({ ...row, run_id: effectiveRunId });
   } catch (err) {
     return Response.json({ error: err.message }, { status: 500 });
   }
 }
+
 
 
 // ═══════════════════════════════════════════════════════
