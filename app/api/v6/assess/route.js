@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from '@/lib/db';
-import { policies, provisions, obligations, subDomainLabels, coverageAssessments, facilityProfiles } from '@/lib/schema';
+import { obligations, coverageAssessments, facilityProfiles } from '@/lib/schema';
 import { eq, sql } from 'drizzle-orm';
 import { findCandidatesHybrid, HIGH_RISK_TOPICS } from '@/lib/matching';
 import { ASSESS_PROMPT } from '@/lib/prompts';
@@ -451,14 +451,71 @@ export async function GET(req) {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { map_run_id, facility_id, label, state: runState, scope: runScope, reg_source_ids } = body;
+    const { map_run_id, facility_id: requestedFacilityId, label, state: runState, scope: runScope, reg_source_ids } = body;
     let runId = map_run_id;
+    let runRecord = null;
 
     // Resolve reg_source_ids: explicit list, or look up from run record, or null (all sources)
     let scopedSourceIds = reg_source_ids || null;
 
-    // Create a new run record if no run_id provided
+    if (runId) {
+      const runRecordResult = await db.execute(sql`
+        SELECT id, state, facility_id, reg_sources_used
+        FROM map_runs
+        WHERE id = ${runId}
+        LIMIT 1
+      `);
+      runRecord = (runRecordResult.rows || runRecordResult)[0] || null;
+
+      if (!runRecord) {
+        return Response.json({ error: `map_run_id not found: ${runId}` }, { status: 404 });
+      }
+
+      if (requestedFacilityId && runRecord.facility_id && requestedFacilityId !== runRecord.facility_id) {
+        return Response.json(
+          { error: 'facility_id does not match the existing run facility' },
+          { status: 400 }
+        );
+      }
+
+      if (!scopedSourceIds && runRecord.reg_sources_used) {
+        scopedSourceIds = runRecord.reg_sources_used;
+      }
+    }
+
+    const effectiveFacilityId = requestedFacilityId || runRecord?.facility_id || null;
+    if (!effectiveFacilityId) {
+      return Response.json(
+        { error: 'facility_id is required when starting or resuming an assessment run' },
+        { status: 400 }
+      );
+    }
+
+    const [facilityRecord] = await db.select().from(facilityProfiles).where(eq(facilityProfiles.id, effectiveFacilityId));
+    if (!facilityRecord) {
+      return Response.json({ error: `Invalid facility_id: ${effectiveFacilityId}` }, { status: 400 });
+    }
+
+    const effectiveRunState = runRecord?.state || runState || facilityRecord.state || 'FL';
+
     if (!runId) {
+      runId = ulid('run');
+      await db.execute(sql`
+        INSERT INTO map_runs (id, org_id, facility_id, state, scope, label, status, model_id, prompt_version, reg_sources_used, started_at)
+        VALUES (${runId}, 'ars', ${effectiveFacilityId}, ${effectiveRunState}, ${runScope || 'baseline'}, ${label || `${effectiveRunState} â€” prompt v7`}, 'running',
+                ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, ${scopedSourceIds ? JSON.stringify(scopedSourceIds) : null}, NOW())
+        ON CONFLICT (id) DO NOTHING
+      `);
+    } else if (!runRecord?.facility_id && requestedFacilityId) {
+      await db.execute(sql`
+        UPDATE map_runs
+        SET facility_id = ${effectiveFacilityId}
+        WHERE id = ${runId}
+      `);
+    }
+
+    /* Legacy run-init fallback removed; facility handling is resolved above.
+    if (false && !runId) {
       runId = ulid('run');
       await db.execute(sql`
         INSERT INTO map_runs (id, org_id, state, scope, label, status, model_id, prompt_version, reg_sources_used, started_at)
@@ -466,7 +523,7 @@ export async function POST(req) {
                 ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, ${scopedSourceIds ? JSON.stringify(scopedSourceIds) : null}, NOW())
         ON CONFLICT (id) DO NOTHING
       `);
-    } else if (!scopedSourceIds) {
+    } else if (false && !scopedSourceIds) {
       // Resuming a run — load reg_sources_used from the run record
       const runRecord = await db.execute(sql`SELECT reg_sources_used FROM map_runs WHERE id = ${runId}`);
       const runRow = (runRecord.rows || runRecord)[0];
@@ -474,6 +531,8 @@ export async function POST(req) {
         scopedSourceIds = runRow.reg_sources_used;
       }
     }
+
+    */
 
     // Find next unassessed obligation FOR THIS RUN (skip excluded, scope to reg sources)
     const sourceFilter = scopedSourceIds?.length
@@ -512,18 +571,7 @@ export async function POST(req) {
     obl.source_name = (sourceResult.rows || sourceResult)?.[0]?.name || null;
 
     // Load facility profile
-    let facility = null;
-    if (facility_id) {
-      const [f] = await db.select().from(facilityProfiles).where(eq(facilityProfiles.id, facility_id));
-      facility = f || null;
-    }
-    if (!facility) {
-      const facilityState = runState || 'FL';
-      const fResult = await db.execute(sql`
-        SELECT * FROM facility_profiles WHERE state = ${facilityState} ORDER BY name LIMIT 1
-      `);
-      facility = (fResult.rows || fResult)?.[0] || null;
-    }
+    let facility = facilityRecord;
 
     // Compatibility: merge legacy boolean columns into attributes JSONB
     // if attributes is empty (pre-migration) or missing keys
@@ -544,20 +592,13 @@ export async function POST(req) {
       facility.attributes = attrs;
     }
 
-    // Load matching data
-    const allPolicies = await db.select().from(policies);
-    const allProvisions = await db.select().from(provisions);
-    const allLabels = await db.select().from(subDomainLabels);
-
-    const provsByPolicy = {};
-    for (const prov of allProvisions) {
-      if (!provsByPolicy[prov.policy_id]) provsByPolicy[prov.policy_id] = [];
-      provsByPolicy[prov.policy_id].push(prov);
-    }
-
-    // Run hybrid matching — returns { candidates, provisionSimilarityMap }
-    const { candidates, provisionSimilarityMap, provisionKeywordOverlapMap } =
-      await findCandidatesHybrid(obl, allPolicies, allProvisions, allLabels);
+    // Run hybrid matching with SQL-first candidate generation.
+    const {
+      candidates,
+      provisionsByPolicy,
+      provisionSimilarityMap,
+      provisionKeywordOverlapMap,
+    } = await findCandidatesHybrid(obl);
 
     if (candidates.length === 0) {
       const assessId = ulid('ca');
@@ -588,13 +629,13 @@ export async function POST(req) {
     let candidateContext = candidates.map(c => ({
       policy_number: c.policy_number, title: c.title, score: c.score,
       policy_id: c.policy_id,
-      provisions: (provsByPolicy[c.policy_id] || []),
+      provisions: (provisionsByPolicy[c.policy_id] || []),
     }));
 
     candidateContext = capProvisions(
       candidateContext,
       obl,
-      provsByPolicy,
+      provisionsByPolicy,
       provisionSimilarityMap,
       provisionKeywordOverlapMap
     );
@@ -759,7 +800,7 @@ export async function POST(req) {
       output_summary: `${finalStatus} (${assessment.confidence}) → ${assessment.covering_policy_number || 'none'}${reviewFlag ? ` [${reviewFlag}]` : ''}`,
       metadata: {
         validation_warnings: validationWarnings.length > 0 ? validationWarnings : undefined,
-        provision_cap_applied: candidateContext.some(c => (provsByPolicy[c.policy_id]?.length || 0) > c.provisions.length),
+        provision_cap_applied: candidateContext.some(c => (provisionsByPolicy[c.policy_id]?.length || 0) > c.provisions.length),
       },
     });
 

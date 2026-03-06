@@ -1,5 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Spinner } from './shared';
+
+function normalizeFacility(facility) {
+  const id = facility?.facility_id || facility?.id;
+  if (!id) return null;
+
+  return {
+    id,
+    name: facility.name || 'Unnamed facility',
+    abbreviation: facility.abbreviation || '',
+    state: facility.state || '',
+    levels_of_care: Array.isArray(facility.levels_of_care) ? facility.levels_of_care : [],
+  };
+}
 
 export default function PipelineMode({ running, setRunning, runLog, setRunLog, addLog }) {
   const [steps, setSteps] = useState([]);
@@ -15,7 +28,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
   const [runLabel, setRunLabel] = useState('');
   const [runScope, setRunScope] = useState('');
   const [facilities, setFacilities] = useState([]);
-  const [selectedFacility, setSelectedFacility] = useState(null);
+  const [selectedFacility, setSelectedFacility] = useState('');
 
   const refreshPipeline = () => {
     fetch('/api/v6/pipeline')
@@ -25,6 +38,35 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
   };
 
   useEffect(() => { refreshPipeline(); }, []);
+
+  const normalizedFacilities = facilities
+    .map(normalizeFacility)
+    .filter(Boolean)
+    .sort((a, b) => {
+      const stateCompare = (a.state || '').localeCompare(b.state || '');
+      if (stateCompare !== 0) return stateCompare;
+      return (a.abbreviation || a.name).localeCompare(b.abbreviation || b.name);
+    });
+
+  const selectedSourceStates = [...new Set(
+    regSources
+      .filter(source => selectedSources.has(source.id))
+      .map(source => source.state)
+      .filter(state => state && state !== 'ALL')
+  )];
+
+  const availableFacilities = normalizedFacilities.filter(facility =>
+    selectedSourceStates.length === 0 || selectedSourceStates.includes(facility.state)
+  );
+
+  const selectedFacilityRecord = availableFacilities.find(facility => facility.id === selectedFacility) || null;
+
+  useEffect(() => {
+    if (!selectedFacility) return;
+    if (!availableFacilities.some(facility => facility.id === selectedFacility)) {
+      setSelectedFacility('');
+    }
+  }, [availableFacilities, selectedFacility]);
 
   // ── Upload a single regulatory source ──
   const handleRegUpload = async (e) => {
@@ -224,7 +266,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
         setSelectedSources(new Set(sources.filter(s => s.obligation_count > 0).map(s => s.id)));
         setRunLabel('');
         setRunScope('');
-        setSelectedFacility(null);
+        setSelectedFacility('');
         setShowRunConfig(true);
       } catch (err) {
         addLog(`✗ Failed to load run config: ${err.message}`);
@@ -255,10 +297,16 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
     const label = runLabel || `Run — ${sourceNames}`;
     const scope = runScope || 'assessment';
 
+    if (!selectedFacilityRecord) {
+      addLog('Facility selection is required before starting an assessment run');
+      return;
+    }
+
     setShowRunConfig(false);
     setRunning('assess');
     addLog(`Starting assessment: ${totalObligations} obligations from ${sourceIds.length} sources`);
     addLog(`  Sources: ${sourceNames}`);
+    addLog(`  Facility: ${selectedFacilityRecord.name}${selectedFacilityRecord.abbreviation ? ` (${selectedFacilityRecord.abbreviation})` : ''}`);
     addLog(`  Label: ${label}`);
 
     try {
@@ -276,10 +324,10 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
           const reqBody = runId
             ? { map_run_id: runId }
             : {
-                state: regSources.find(s => selectedSources.has(s.id))?.state || 'FL',
+                state: selectedFacilityRecord.state || regSources.find(s => selectedSources.has(s.id))?.state || 'FL',
                 scope,
                 label,
-                facility_id: selectedFacility || undefined,
+                facility_id: selectedFacilityRecord.id,
                 reg_source_ids: sourceIds,
               };
 
@@ -397,8 +445,40 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
             </p>
           </div>
 
+          {/* Facility selection */}
+          <div>
+            <label className="text-xs font-medium text-stone-500">Facility <span className="text-red-600">*</span></label>
+            <select
+              value={selectedFacility}
+              onChange={(e) => setSelectedFacility(e.target.value)}
+              disabled={availableFacilities.length === 0}
+              className="w-full mt-1 px-2 py-1.5 text-sm border border-stone-300 rounded bg-white disabled:bg-stone-50 disabled:text-stone-400"
+            >
+              <option value="">Select a facility...</option>
+              {availableFacilities.map(facility => (
+                <option key={facility.id} value={facility.id}>
+                  {facility.abbreviation ? `${facility.abbreviation} - ${facility.name}` : facility.name}
+                  {facility.state ? ` (${facility.state})` : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-stone-400 mt-1">
+              {availableFacilities.length === 0
+                ? 'No facilities match the currently selected regulatory-source states.'
+                : 'Runs require an explicit facility and will not default to the first facility by state.'}
+            </p>
+            {selectedFacilityRecord && (
+              <p className="text-xs text-stone-500 mt-1">
+                {selectedFacilityRecord.state || 'Unknown state'}
+                {selectedFacilityRecord.levels_of_care.length > 0
+                  ? ` · ${selectedFacilityRecord.levels_of_care.join(', ')}`
+                  : ' · No LOC configured'}
+              </p>
+            )}
+          </div>
+
           {/* Run label and scope */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-medium text-stone-500">Run Label</label>
               <input
@@ -425,7 +505,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
           <div className="flex justify-end">
             <button
               onClick={startAssessRun}
-              disabled={selectedSources.size === 0}
+              disabled={selectedSources.size === 0 || !selectedFacilityRecord}
               className="px-4 py-2 bg-stone-900 text-white text-sm rounded hover:bg-stone-800 disabled:opacity-50"
             >
               Start Run ({regSources.filter(s => selectedSources.has(s.id)).reduce((sum, s) => sum + s.obligation_count, 0)} obligations)

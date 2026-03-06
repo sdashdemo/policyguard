@@ -1,0 +1,8 @@
+.env.local
+.env.*.local
+~$*.xlsx
+node_modules/
+.next/
+artifacts/*.xlsx
+claude notes/
+claudenotes/
