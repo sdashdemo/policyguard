@@ -124,7 +124,7 @@ export async function GET() {
     results.push({
       citation: label.citation,
       accepted_policies: accepted,
-      top1_policy,
+      top1_policy: top1Policy,
       found_rank,
       top1_hit,
       top3_hit,
