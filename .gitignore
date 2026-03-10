@@ -3,7 +3,7 @@
 ~$*.xlsx
 node_modules/
 .next/
-artifacts/*.xlsx
-artifacts/*.json
+artifacts/
+desktop.ini
 claude notes/
 claudenotes/
