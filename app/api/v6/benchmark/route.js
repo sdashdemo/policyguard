@@ -63,7 +63,7 @@ const LABELS = [
   { citation: "TJC NPSG.15.01.01 EP 6 ESP-1", bucket: "gold", label_type: "single", accepted_policy_numbers: ["CL-2.006"] },
 ];
 
-function normalizePN(pn) { return pn.toLowerCase().replace(/[\s-]+/g, ''); }
+function normalizePN(pn) { return (pn || '').toLowerCase().replace(/[\s-]+/g, ''); }
 
 export async function GET() {
   const results = [];
