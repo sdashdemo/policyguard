@@ -63,6 +63,8 @@ const LABELS = [
   { citation: "TJC NPSG.15.01.01 EP 6 ESP-1", bucket: "gold", label_type: "single", accepted_policy_numbers: ["CL-2.006"] },
 ];
 
+function normalizePN(pn) { return pn.toLowerCase().replace(/[\s-]+/g, ''); }
+
 export async function GET() {
   const results = [];
   let top1_hits = 0;
@@ -107,9 +109,10 @@ export async function GET() {
     const top1Policy = candidates[0]?.policy_number || null;
 
     // Find best rank of any accepted policy in candidates list
+    const acceptedNorm = accepted.map(normalizePN);
     let found_rank = null;
     for (let i = 0; i < candidates.length; i++) {
-      if (accepted.includes(candidates[i].policy_number)) {
+      if (acceptedNorm.includes(normalizePN(candidates[i].policy_number))) {
         found_rank = i + 1; // 1-indexed
         break;
       }
