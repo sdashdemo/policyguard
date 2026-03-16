@@ -6,22 +6,19 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from '@/lib/db';
-import { sql } from 'drizzle-orm';
+import { policies, provisions, obligations, subDomainLabels, facilityProfiles } from '@/lib/schema';
+import { sql, eq } from 'drizzle-orm';
 import { ASSESS_PROMPT } from '@/lib/prompts';
-import { renderFacilityContext, buildFacilityContextString } from '@/lib/facility-attributes';
-import { generateQueryEmbedding } from '@/lib/embeddings';
+import { findCandidatesHybrid } from '@/lib/matching';
 import { parseJSON } from '@/lib/parse';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300; // 5 minutes — needs time for 40 LLM calls
+export const maxDuration = 300;
 
 const MODEL_ID = process.env.ANTHROPIC_MODEL_ID || 'claude-sonnet-4-20250514';
 const FACILITY_ABBR = 'ORC';
-
-// The run to compare against
 const RUN_ID = 'mm548ato_1bf5r3gy';
 
-// The 40 reviewed GAP audit rows with human labels
 const AUDIT_ROWS = [
   { row: 1, citation: 'CTS.02.02.05 EP 4', label: 'GAP_SHOULD_BE_PARTIAL' },
   { row: 2, citation: 'TJC MM.05.01.07 EP 2', label: 'GAP_BUT_CITATION_TO_NEIGHBOR_POLICY' },
@@ -75,9 +72,9 @@ export async function GET(req) {
       SELECT * FROM facility_profiles WHERE abbreviation = ${FACILITY_ABBR} LIMIT 1
     `);
     const facility = (facilityResult.rows || facilityResult)?.[0];
-    if (!facility) return Response.json({ error: 'Facility not found' }, { status: 400 });
+    if (!facility) return Response.json({ error: 'Facility ORC not found' }, { status: 400 });
 
-    // Merge legacy attributes
+    // Merge legacy attributes (same as real assess route)
     const attrs = facility.attributes || {};
     if (attrs.prohibits_restraint === undefined && facility.prohibits_restraint !== undefined)
       attrs.prohibits_restraint = facility.prohibits_restraint;
@@ -89,18 +86,13 @@ export async function GET(req) {
       attrs.patient_work_program = facility.allows_patient_work_program;
     facility.attributes = attrs;
 
-    // Load all policies + provisions once
-    const policiesResult = await db.execute(sql`
-      SELECT id, policy_number, title, domain, sub_domain, dcf_citations, tjc_citations
-      FROM policies WHERE status = 'active' OR status IS NULL
-    `);
-    const policies = policiesResult.rows || policiesResult;
-
-    const provsResult = await db.execute(sql`SELECT id, policy_id, text, section, source_citation FROM provisions`);
-    const provisions = provsResult.rows || provsResult;
+    // Load all data once (same as real assess route)
+    const allPolicies = await db.select().from(policies);
+    const allProvisions = await db.select().from(provisions);
+    const allLabels = await db.select().from(subDomainLabels);
 
     const provsByPolicy = {};
-    for (const prov of provisions) {
+    for (const prov of allProvisions) {
       if (!provsByPolicy[prov.policy_id]) provsByPolicy[prov.policy_id] = [];
       provsByPolicy[prov.policy_id].push(prov);
     }
@@ -111,10 +103,10 @@ export async function GET(req) {
       const { row, citation, label, dup } = auditRow;
 
       try {
-        // Look up obligation + old assessment
+        // Look up obligation + old assessment from the run
         const oblResult = await db.execute(sql`
           SELECT o.id, o.citation, o.requirement, o.reg_source_id, o.loc_applicability,
-                 o.risk_tier, o.topics,
+                 o.risk_tier, o.topics, o.source_type,
                  ca.status as old_status, ca.confidence as old_confidence,
                  ca.reasoning as old_reasoning,
                  rs.name as source_name
@@ -133,60 +125,38 @@ export async function GET(req) {
           results.push({ row, citation, label, old_status: 'NOT_FOUND', new_status: 'SKIP', changed: false });
           continue;
         }
+        obl.source_name = obl.source_name || null;
 
-        // Vector search for candidates
-        const queryText = `${obl.citation}: ${obl.requirement}`;
-        const embedding = await generateQueryEmbedding(queryText);
-        const vectorStr = `[${embedding.join(',')}]`;
-
-        const vectorResults = await db.execute(sql`
-          SELECT p.policy_id, p.id as provision_id, p.text as provision_text, p.section,
-                 1 - (p.embedding <=> ${vectorStr}::vector) as similarity
-          FROM provisions p
-          WHERE p.embedding IS NOT NULL
-          ORDER BY p.embedding <=> ${vectorStr}::vector
-          LIMIT 30
-        `);
-
-        const vecRows = vectorResults.rows || vectorResults || [];
-
-        // Group by policy
-        const policyBestSim = {};
-        const provSimMap = {};
-        for (const vr of vecRows) {
-          provSimMap[vr.provision_id] = Number(vr.similarity);
-          if (!policyBestSim[vr.policy_id] || Number(vr.similarity) > policyBestSim[vr.policy_id]) {
-            policyBestSim[vr.policy_id] = Number(vr.similarity);
-          }
-        }
-
-        // Top 12 candidates
-        const sorted = Object.entries(policyBestSim)
-          .sort(([, a], [, b]) => b - a)
-          .slice(0, 12);
-
-        const candidates = [];
-        for (const [policyId, bestSim] of sorted) {
-          const policy = policies.find(p => p.id === policyId);
-          if (!policy) continue;
-          const policyProvs = (provsByPolicy[policyId] || [])
-            .map(p => ({ ...p, _sim: provSimMap[p.id] || 0 }))
-            .sort((a, b) => b._sim - a._sim)
-            .slice(0, 8);
-          candidates.push({
-            policy_number: policy.policy_number,
-            title: policy.title,
-            provisions: policyProvs,
-          });
-        }
+        // Use the REAL matching module (same as assess route)
+        const { candidates, provisionSimilarityMap } = await findCandidatesHybrid(
+          obl, allPolicies, allProvisions, allLabels
+        );
 
         if (candidates.length === 0) {
-          results.push({ row, citation, label, old_status: obl.old_status, new_status: 'GAP', changed: false, note: 'no candidates' });
+          results.push({
+            row, citation, label,
+            old_status: obl.old_status,
+            new_status: 'GAP',
+            changed: false,
+            note: 'no candidates from findCandidatesHybrid'
+          });
           continue;
         }
 
-        // Call Claude with the UPDATED prompt
-        const promptContent = ASSESS_PROMPT(obl, candidates, facility);
+        // Build candidate context with provisions (same as assess route)
+        const candidateContext = candidates.map(c => ({
+          policy_number: c.policy_number,
+          title: c.title,
+          score: c.score,
+          policy_id: c.policy_id,
+          provisions: (provsByPolicy[c.policy_id] || [])
+            .map(p => ({ ...p, _sim: provisionSimilarityMap[p.id] || 0 }))
+            .sort((a, b) => b._sim - a._sim)
+            .slice(0, 8),
+        }));
+
+        // Call Claude with the UPDATED ASSESS_PROMPT
+        const promptContent = ASSESS_PROMPT(obl, candidateContext, facility);
 
         const message = await client.messages.create({
           model: MODEL_ID,
@@ -210,14 +180,17 @@ export async function GET(req) {
           reasoning: (parsed.reasoning || '').slice(0, 300),
           gap_detail: (parsed.gap_detail || '').slice(0, 200),
           covering_policy: parsed.covering_policy_number || null,
+          candidates_count: candidates.length,
+          top_candidate: candidates[0]?.policy_number || null,
+          top_score: candidates[0]?.score || 0,
         });
 
-        // Small delay for rate limits
+        // Rate limit delay
         await new Promise(r => setTimeout(r, 1200));
 
       } catch (rowErr) {
         errors.push({ row, citation, error: rowErr.message });
-        results.push({ row, citation, label, old_status: 'ERROR', new_status: 'ERROR', changed: false });
+        results.push({ row, citation, label, old_status: 'ERROR', new_status: 'ERROR', changed: false, error: rowErr.message });
         await new Promise(r => setTimeout(r, 3000));
       }
     }
@@ -228,10 +201,9 @@ export async function GET(req) {
     for (const r of changed) {
       const key = `GAP → ${r.new_status}`;
       if (!buckets[key]) buckets[key] = [];
-      buckets[key].push({ row: r.row, citation: r.citation, label: r.label, confidence: r.new_confidence });
+      buckets[key].push({ row: r.row, citation: r.citation, label: r.label, confidence: r.new_confidence, policy: r.covering_policy });
     }
 
-    // Validate against audit labels
     let trueGapHeld = 0, trueGapLost = 0;
     let shouldBePartialFixed = 0, shouldBePartialStuck = 0;
     let shouldBeNAFixed = 0, shouldBeNAStuck = 0;
