@@ -268,7 +268,7 @@ function capProvisions(candidateContext, obligation, provsByPolicy, provisionSim
 
 
 // ═══════════════════════════════════════════════════════
-// Server-side v7 validation (3-path N/A, all hot-fixes)
+// Server-side v8 validation (3-path N/A, all hot-fixes)
 // ═══════════════════════════════════════════════════════
 
 function validateV7Assessment(parsed, candidatePolicies, obligation, facility, allProvisionTexts) {
@@ -322,7 +322,6 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
   const canonicalLocLine = canonicalize(locLine);
   const canonicalFacilityContextBlock = canonicalize(facilityContextBlock);
   const canonicalAllProvTexts = allProvTexts.map(t => canonicalize(t));
-
 
   // ═══════════════════════════════════════════════════════
   // NOT_APPLICABLE validation (3-path: LOC / Activity / Reject)
@@ -394,7 +393,6 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
         if (facilityHasLOC) {
           errors.push(`LOC-based N/A rejected: facility offers LOC (trigger: ${allTriggerLOCs.join(', ')}, facility: ${facilityLOCs.join(', ')})`);
         }
-
       } else {
         // Look up trigger in the dynamic attribute registry
         const match = findTriggerFamily(parsed.trigger_span);
@@ -409,13 +407,13 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
           errors.push('NOT_APPLICABLE rejected: trigger does not match known LOC or any registered attribute family');
         }
       }
+    }
 
     // Set retry instruction if N/A validation failed
     if (errors.length > 0) {
       parsed._retry_instruction = 'NOT_APPLICABLE rejected: invalid evidence. Reassess as COVERED/PARTIAL/GAP.';
     }
   }
-
 
   // ═══════════════════════════════════════════════════════
   // CONFLICTING validation
@@ -438,7 +436,6 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
     }
   }
 
-
   // ═══════════════════════════════════════════════════════
   // COVERED / PARTIAL validation
   // ═══════════════════════════════════════════════════════
@@ -451,17 +448,20 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
     } else if (!candidatePolicyNumbers.has(parsed.covering_policy_number)) {
       errors.push(`covering_policy_number "${parsed.covering_policy_number}" not in candidates`);
     }
+
     // HARD ERRORS: anchor spans must be exact substrings
     if (!parsed.obligation_span) {
       errors.push(`${parsed.status} requires obligation_span`);
     } else if (!requirementText.includes(parsed.obligation_span)) {
       errors.push('obligation_span not exact substring of Requirement');
     }
+
     if (!parsed.provision_span) {
       errors.push(`${parsed.status} requires provision_span`);
     } else if (!allProvTexts.some(t => t.includes(parsed.provision_span))) {
       errors.push('provision_span not exact substring of any presented provision');
     }
+
     // HARD ERROR: reviewed_provision_refs required
     const refs = parsed.reviewed_provision_refs;
     const totalProvisions = candidatePolicies.reduce((sum, c) => sum + (c.provisions?.length || 0), 0);
@@ -483,7 +483,6 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
       warnings.push('GAP should have gap_detail');
     }
   }
-
 
   // reviewed_provision_refs format check (non-blocking) for CONFLICTING
   if (parsed.status === 'CONFLICTING') {
@@ -560,9 +559,8 @@ export async function GET(req) {
 }
 
 
-
 // ═══════════════════════════════════════════════════════
-// POST: Run one assessment (v7 pipeline)
+// POST: Run one assessment (v8 pipeline)
 // ═══════════════════════════════════════════════════════
 
 export async function POST(req) {
@@ -636,7 +634,7 @@ export async function POST(req) {
       runId = ulid('run');
       await db.execute(sql`
         INSERT INTO map_runs (id, org_id, state, scope, label, status, model_id, prompt_version, reg_sources_used, started_at)
-        VALUES (${runId}, 'ars', ${runState || 'FL'}, ${runScope || 'baseline'}, ${label || `${runState || 'FL'} — prompt v7`}, 'running',
+        VALUES (${runId}, 'ars', ${runState || 'FL'}, ${runScope || 'baseline'}, ${label || `${runState || 'FL'} — prompt v8`}, 'running',
                 ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, ${scopedSourceIds ? JSON.stringify(scopedSourceIds) : null}, NOW())
         ON CONFLICT (id) DO NOTHING
       `);
@@ -648,13 +646,13 @@ export async function POST(req) {
         scopedSourceIds = runRow.reg_sources_used;
       }
     }
-
     */
 
     // Find next unassessed obligation FOR THIS RUN (skip excluded, scope to reg sources)
     const sourceFilter = scopedSourceIds?.length
       ? sql`AND reg_source_id IN (${sql.join(scopedSourceIds.map(id => sql`${id}`), sql`, `)})`
       : sql``;
+
     const nextResult = await db.execute(sql`
       SELECT id FROM obligations
       WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
@@ -720,49 +718,67 @@ export async function POST(req) {
     if (candidates.length === 0) {
       const assessId = ulid('ca');
       await db.insert(coverageAssessments).values({
-        id: assessId, org_id: ORG_ID, facility_id: facility?.id || null,
-        obligation_id: obl.id, policy_id: null, provision_id: null,
-        status: 'GAP', confidence: 'high',
+        id: assessId,
+        org_id: ORG_ID,
+        facility_id: facility?.id || null,
+        obligation_id: obl.id,
+        policy_id: null,
+        provision_id: null,
+        status: 'GAP',
+        confidence: 'high',
         gap_detail: 'No candidate policies found by matching algorithm',
-        match_method: 'none', match_score: 0,
-        map_run_id: runId, assessed_by: 'algorithm',
-        model_id: MODEL_ID, prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
+        match_method: 'none',
+        match_score: 0,
+        map_run_id: runId,
+        assessed_by: 'algorithm',
+        model_id: MODEL_ID,
+        prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
       });
 
       const remaining = await db.execute(sql`
-        SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false) ${sourceFilter}
+        SELECT count(*) as c FROM obligations
+        WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
+          AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
+          ${sourceFilter}
       `);
       const left = Number((remaining.rows || remaining)[0].c);
 
       return Response.json({
-        ok: true, done: left === 0,
-        obligation_id: obl.id, citation: obl.citation,
-        status: 'GAP', confidence: 'high', candidates: 0,
-        remaining: left, map_run_id: runId,
+        ok: true,
+        done: left === 0,
+        obligation_id: obl.id,
+        citation: obl.citation,
+        status: 'GAP',
+        confidence: 'high',
+        candidates: 0,
+        remaining: left,
+        map_run_id: runId,
       });
     }
 
-    // Build candidate context with provision capping (hot-fix 2a)
+    // Build candidate context with provision capping
     let candidateContext = candidates.map(c => ({
-      policy_number: c.policy_number, title: c.title, score: c.score,
+      policy_number: c.policy_number,
+      title: c.title,
+      score: c.score,
       policy_id: c.policy_id,
       provisions: (provisionsByPolicy[c.policy_id] || []),
     }));
 
     candidateContext = capProvisions(
-      candidateContext,
-      obl,
-      provisionsByPolicy,
-      provisionSimilarityMap,
-      provisionKeywordOverlapMap
-    );
+  candidateContext,
+  obl,
+  provisionsByPolicy,
+  provisionSimilarityMap,
+  provisionKeywordOverlapMap
+);
 
     // Collect all provision texts for validation
     const allProvisionTexts = candidateContext.flatMap(c =>
       (c.provisions || []).map(p => p.text)
     );
 
-    // ── LLM assessment with v7 prompt + validation + retry ──
+    // ── LLM assessment with v8 prompt + validation + retry ──
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     let assessment = null;
     let lastError = null;
@@ -847,7 +863,8 @@ export async function POST(req) {
 
     if (!assessment) {
       assessment = {
-        status: 'GAP', confidence: 'low',
+        status: 'GAP',
+        confidence: 'low',
         covering_policy_number: null,
         gap_detail: `Assessment failed: ${lastError}`,
         reasoning: 'Error during assessment',
@@ -890,9 +907,14 @@ export async function POST(req) {
     // ── Persist assessment ──
     const assessId = ulid('ca');
     await db.insert(coverageAssessments).values({
-      id: assessId, org_id: ORG_ID, facility_id: facility?.id || null,
-      obligation_id: obl.id, policy_id: matchedPolicyId, provision_id: null,
-      status: finalStatus, confidence: assessment.confidence || 'medium',
+      id: assessId,
+      org_id: ORG_ID,
+      facility_id: facility?.id || null,
+      obligation_id: obl.id,
+      policy_id: matchedPolicyId,
+      provision_id: null,
+      status: finalStatus,
+      confidence: assessment.confidence || 'medium',
       gap_detail: assessment.gap_detail || null,
       recommended_policy: assessment.recommended_policy || null,
       obligation_span: assessment.obligation_span || null,
@@ -903,16 +925,23 @@ export async function POST(req) {
       inapplicability_reason: assessment.inapplicability_reason || null,
       conflict_detail: assessment.conflict_detail || null,
       reviewed_provision_refs: assessment.reviewed_provision_refs || null,
-      match_method: matchMethod, match_score: matchScore,
+      match_method: matchMethod,
+      match_score: matchScore,
       vector_score: vectorScore,
-      map_run_id: runId, assessed_by: 'llm',
-      model_id: MODEL_ID, prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
+      map_run_id: runId,
+      assessed_by: 'llm',
+      model_id: MODEL_ID,
+      prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
       review_notes: assessment.review_notes || (reviewFlag ? `[auto] ${reviewFlag}` : null),
     });
 
     await logAuditEvent({
-      event_type: 'assessment', entity_type: 'coverage_assessment', entity_id: assessId,
-      actor: 'llm', model_id: MODEL_ID, prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
+      event_type: 'assessment',
+      entity_type: 'coverage_assessment',
+      entity_id: assessId,
+      actor: 'llm',
+      model_id: MODEL_ID,
+      prompt_version: PROMPT_VERSIONS.ASSESS_COVERAGE,
       input_summary: `${obl.citation} | ${candidates.length} cands | ${allProvisionTexts.length} provs`,
       output_summary: `${finalStatus} (${assessment.confidence}) → ${assessment.covering_policy_number || 'none'}${reviewFlag ? ` [${reviewFlag}]` : ''}`,
       metadata: {
@@ -922,21 +951,27 @@ export async function POST(req) {
     });
 
     const remaining = await db.execute(sql`
-      SELECT count(*) as c FROM obligations WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId}) AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false) ${sourceFilter}
+      SELECT count(*) as c FROM obligations
+      WHERE id NOT IN (SELECT obligation_id FROM coverage_assessments WHERE map_run_id = ${runId})
+        AND (exclude_from_assessment IS NULL OR exclude_from_assessment = false)
+        ${sourceFilter}
     `);
     const left = Number((remaining.rows || remaining)[0].c);
 
     return Response.json({
-      ok: true, done: left === 0,
-      obligation_id: obl.id, citation: obl.citation,
-      status: finalStatus, confidence: assessment.confidence,
+      ok: true,
+      done: left === 0,
+      obligation_id: obl.id,
+      citation: obl.citation,
+      status: finalStatus,
+      confidence: assessment.confidence,
       covering_policy: assessment.covering_policy_number,
       candidates: candidates.length,
       provisions_shown: allProvisionTexts.length,
-      remaining: left, map_run_id: runId,
+      remaining: left,
+      map_run_id: runId,
       review_flag: reviewFlag,
     });
-
   } catch (err) {
     console.error('Assess error:', err);
     return Response.json({ error: err.message }, { status: 500 });
