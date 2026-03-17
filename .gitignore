@@ -7,3 +7,4 @@ artifacts/*.xlsx
 artifacts/*.json
 claude notes/
 claudenotes/
+.claude/
