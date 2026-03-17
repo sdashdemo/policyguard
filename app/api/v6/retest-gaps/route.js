@@ -64,6 +64,7 @@ const AUDIT_ROWS = [
 
 export async function GET(req) {
   const url = new URL(req.url);
+  const effectiveRunId = url.searchParams.get('runId') || RUN_ID;
   const batch = parseInt(url.searchParams.get('batch') || '1', 10);
   const BATCH_SIZE = 10;
   const start = (batch - 1) * BATCH_SIZE;
@@ -124,7 +125,7 @@ export async function GET(req) {
           JOIN coverage_assessments ca ON ca.obligation_id = o.id
           JOIN reg_sources rs ON rs.id = o.reg_source_id
           WHERE o.citation = ${citation}
-            AND ca.map_run_id = ${RUN_ID}
+            AND ca.map_run_id = ${effectiveRunId}
             AND ca.status = 'GAP'
           ORDER BY o.id
           LIMIT 1 ${dup ? sql`OFFSET ${(dup - 1)}` : sql``}
@@ -254,6 +255,7 @@ export async function GET(req) {
     };
 
     return Response.json({
+      effectiveRunId,
       batch,
       batchRows: `${start + 1}-${start + batchRows.length} of ${AUDIT_ROWS.length}`,
       summary: {
