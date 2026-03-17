@@ -66,66 +66,141 @@ function extractFacilityLocs(facility) {
   return unique(facilityLocs.flatMap(v => extractLocKeywords(String(v))));
 }
 
+const LEXICAL_STOPWORDS = new Set([
+  'the','and','for','with','from','that','this','these','those','shall','must','will',
+  'may','can','could','should','would','into','onto','upon','such','each','every','any',
+  'all','both','either','neither','where','when','while','within','under','over','after',
+  'before','during','through','including','include','includes','provided','provide',
+  'provides','policy','procedure','procedures','organization','facility','program',
+  'provider','individual','individuals','staff','patient','patients','client','clients',
+  'services','service','care','treatment','documentation','document','records','record',
+  'required','requirement','requirements','applicable','compliance','regulation',
+  'regulations','standard','standards','section','sections','chapter','chapters'
+]);
+
+function lexicalTokens(text = '') {
+  return [...new Set(
+    String(text)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s\-\/]/g, ' ')
+      .split(/\s+/)
+      .map(t => t.trim())
+      .filter(t => t.length >= 3 && !LEXICAL_STOPWORDS.has(t))
+  )];
+}
+
+function lexicalOverlapScore(requirementText = '', provisionText = '') {
+  const reqTokens = lexicalTokens(requirementText);
+  if (reqTokens.length === 0) return 0;
+
+  const provTokens = new Set(lexicalTokens(provisionText));
+  let hits = 0;
+  let strongHits = 0;
+
+  for (const token of reqTokens) {
+    if (provTokens.has(token)) {
+      hits++;
+      if (token.length >= 8) strongHits++;
+    }
+  }
+
+  return (hits * 2) + strongHits + (hits / reqTokens.length);
+}
+
 // ═══════════════════════════════════════════════════════
 // Provision capping with citation-pinned bypass + similarity ranking
 // ═══════════════════════════════════════════════════════
 
 function capProvisions(candidateContext, obligation, provsByPolicy, provisionSimilarityMap, provisionKeywordOverlapMap) {
   const oblCitation = (obligation.citation || '').toLowerCase().trim();
+  const requirementText = obligation.requirement || '';
   const simMap = provisionSimilarityMap || {};
   const keywordMap = provisionKeywordOverlapMap || {};
 
   // ── Dedup provisions across policies by normalized text hash ──
-  // When duplicate policies exist (LD 2.003 / LD-2.003), identical provisions
-  // from both appear in candidates. Keep only the highest-similarity copy.
-  const globalTextSeen = new Map(); // normalized text → { policy_id, prov_id, sim }
+  // Keep the strongest copy globally, using composite score rather than sim alone.
+  const globalTextSeen = new Map(); // normalized text → { policy_id, prov_id, composite }
+
   for (const candidate of candidateContext) {
     const allProvs = provsByPolicy[candidate.policy_id] || [];
     for (const prov of allProvs) {
-      const normText = prov.text.replace(/\s+/g, ' ').trim().toLowerCase();
-      const sim = simMap[prov.id] || 0;
+      const normText = String(prov.text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const sim = Number(simMap[prov.id] || 0);
+      const kw = keywordMap[prov.id] != null
+        ? Number(keywordMap[prov.id])
+        : lexicalOverlapScore(requirementText, prov.text || '');
+
+      const composite = Math.max(sim, kw) + ((sim + kw) * 0.25);
+
       const existing = globalTextSeen.get(normText);
-      if (!existing || sim > existing.sim) {
-        globalTextSeen.set(normText, { policy_id: candidate.policy_id, prov_id: prov.id, sim });
+      if (!existing || composite > existing.composite) {
+        globalTextSeen.set(normText, {
+          policy_id: candidate.policy_id,
+          prov_id: prov.id,
+          composite,
+        });
       }
     }
   }
+
   const dedupWinners = new Set(Array.from(globalTextSeen.values()).map(v => v.prov_id));
 
   for (const candidate of candidateContext) {
     const allProvs = (provsByPolicy[candidate.policy_id] || []).filter(p => dedupWinners.has(p.id));
+
     if (allProvs.length <= MIN_PROVISIONS_PER_POLICY) {
-      candidate.provisions = [...allProvs];
+      candidate.provisions = allProvs.map(p => {
+        const sim = Number(simMap[p.id] || 0);
+        const kw = keywordMap[p.id] != null
+          ? Number(keywordMap[p.id])
+          : lexicalOverlapScore(requirementText, p.text || '');
+
+        return {
+          ...p,
+          _sim: sim,
+          _kw: kw,
+          _pinned: false,
+          _composite: Math.max(sim, kw) + ((sim + kw) * 0.25),
+        };
+      });
       continue;
     }
 
     // 1. Citation-pinned provisions bypass ranking
     const citationPinned = [];
     const unpinned = [];
+
     for (const prov of allProvs) {
       const provCitation = (prov.source_citation || '').toLowerCase().trim();
+      const sim = Number(simMap[prov.id] || 0);
+      const kw = keywordMap[prov.id] != null
+        ? Number(keywordMap[prov.id])
+        : lexicalOverlapScore(requirementText, prov.text || '');
+
+      const enriched = {
+        ...prov,
+        _sim: sim,
+        _kw: kw,
+        _pinned: false,
+        _composite: Math.max(sim, kw) + ((sim + kw) * 0.25),
+      };
+
       if (provCitation && oblCitation && provCitation.includes(oblCitation)) {
-        citationPinned.push(prov);
+        enriched._pinned = true;
+        citationPinned.push(enriched);
       } else {
-        unpinned.push(prov);
+        unpinned.push(enriched);
       }
     }
+
+    citationPinned.sort((a, b) => b._composite - a._composite);
     const pinnedToUse = citationPinned.slice(0, MAX_CITATION_PINNED_PER_POLICY);
-    const pinnedIds = new Set(pinnedToUse.map(p => p.id));
 
-    // 2. Rank remaining provisions by BOTH semantic similarity and keyword overlap.
-    // This prevents high-overlap paragraphs from getting pruned when vectors miss them.
-    const remaining = unpinned
-      .filter(p => !pinnedIds.has(p.id))
-      .map(p => ({
-        ...p,
-        _sim: Number(simMap[p.id] || 0),
-        _kw: Number(keywordMap[p.id] || 0),
-      }));
+    // 2. Rank remaining provisions by BOTH semantic similarity and lexical overlap
+    const slots = Math.max(MAX_PROVISIONS_PER_POLICY - pinnedToUse.length, 0);
+    const bySemantic = [...unpinned].sort((a, b) => b._sim - a._sim || b._kw - a._kw);
+    const byKeyword = [...unpinned].sort((a, b) => b._kw - a._kw || b._sim - a._sim);
 
-    const slots = Math.max(MIN_PROVISIONS_PER_POLICY, MAX_PROVISIONS_PER_POLICY) - pinnedToUse.length;
-    const bySemantic = [...remaining].sort((a, b) => b._sim - a._sim || b._kw - a._kw);
-    const byKeyword = [...remaining].sort((a, b) => b._kw - a._kw || b._sim - a._sim);
     const selected = [];
     const selectedIds = new Set();
 
@@ -140,37 +215,51 @@ function capProvisions(candidateContext, obligation, provsByPolicy, provisionSim
       }
     }
 
-    const semanticReserve = Math.min(2, Math.max(0, slots));
-    const keywordReserve = Math.min(2, Math.max(0, slots - semanticReserve));
+    // True dual retention: reserve roughly half for semantic, half for lexical.
+    const semanticReserve = Math.ceil(slots / 2);
+    const keywordReserve = Math.floor(slots / 2);
+
     takeFrom(bySemantic, semanticReserve);
     takeFrom(byKeyword, keywordReserve);
     takeFrom(bySemantic, Math.max(0, slots - selected.length));
 
-    // Keep lowest-value items last so global trimming can pop safely.
-    selected.sort((a, b) => {
-      const aPrimary = Math.max(a._sim, a._kw);
-      const bPrimary = Math.max(b._sim, b._kw);
-      if (bPrimary !== aPrimary) return bPrimary - aPrimary;
-      return (b._sim + b._kw) - (a._sim + a._kw);
-    });
-
+    selected.sort((a, b) => b._composite - a._composite);
     candidate.provisions = [...pinnedToUse, ...selected];
   }
 
-  // Global cap: if total exceeds MAX_TOTAL, trim lowest-ranked provisions from largest candidates
-  let total = candidateContext.reduce((sum, c) => sum + c.provisions.length, 0);
+  // Global cap: trim the weakest removable provision across all candidates,
+  // not just the last provision from the largest bucket.
+  let total = candidateContext.reduce((sum, c) => sum + (c.provisions?.length || 0), 0);
+
   while (total > MAX_TOTAL_PROVISIONS) {
-    let maxIdx = -1;
-    let maxLen = MIN_PROVISIONS_PER_POLICY;
+    let worstCandidateIdx = -1;
+    let worstProvisionIdx = -1;
+    let worstScore = Infinity;
+
     for (let i = 0; i < candidateContext.length; i++) {
-      if (candidateContext[i].provisions.length > maxLen) {
-        maxLen = candidateContext[i].provisions.length;
-        maxIdx = i;
+      const provs = candidateContext[i].provisions || [];
+      if (provs.length <= MIN_PROVISIONS_PER_POLICY) continue;
+
+      for (let j = 0; j < provs.length; j++) {
+        const prov = provs[j];
+        if (prov._pinned) continue;
+
+        const composite = prov._composite != null
+          ? prov._composite
+          : (Math.max(Number(prov._sim || 0), Number(prov._kw || 0)) +
+             ((Number(prov._sim || 0) + Number(prov._kw || 0)) * 0.25));
+
+        if (composite < worstScore) {
+          worstScore = composite;
+          worstCandidateIdx = i;
+          worstProvisionIdx = j;
+        }
       }
     }
-    if (maxIdx === -1) break;
-    // Remove last provision (lowest rank, since lists are sorted descending)
-    candidateContext[maxIdx].provisions.pop();
+
+    if (worstCandidateIdx === -1) break;
+
+    candidateContext[worstCandidateIdx].provisions.splice(worstProvisionIdx, 1);
     total--;
   }
 
