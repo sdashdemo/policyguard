@@ -63,6 +63,16 @@ const AUDIT_ROWS = [
 ];
 
 export async function GET(req) {
+  const url = new URL(req.url);
+  const batch = parseInt(url.searchParams.get('batch') || '1', 10);
+  const BATCH_SIZE = 10;
+  const start = (batch - 1) * BATCH_SIZE;
+  const batchRows = AUDIT_ROWS.slice(start, start + BATCH_SIZE);
+
+  if (batchRows.length === 0) {
+    return Response.json({ error: `No rows for batch ${batch}. Valid batches: 1-4.` }, { status: 400 });
+  }
+
   const results = [];
   const errors = [];
 
@@ -99,7 +109,7 @@ export async function GET(req) {
 
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    for (const auditRow of AUDIT_ROWS) {
+    for (const auditRow of batchRows) {
       const { row, citation, label, dup } = auditRow;
 
       try {
@@ -244,6 +254,8 @@ export async function GET(req) {
     };
 
     return Response.json({
+      batch,
+      batchRows: `${start + 1}-${start + batchRows.length} of ${AUDIT_ROWS.length}`,
       summary: {
         total: results.length,
         changed: changed.length,
