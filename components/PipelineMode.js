@@ -33,11 +33,16 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
   const refreshPipeline = () => {
     fetch('/api/v6/pipeline')
       .then(r => r.json())
-      .then(d => { setSteps(d.steps || []); setLoading(false); })
+      .then(d => {
+        setSteps(d.steps || []);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   };
 
-  useEffect(() => { refreshPipeline(); }, []);
+  useEffect(() => {
+    refreshPipeline();
+  }, []);
 
   const normalizedFacilities = facilities
     .map(normalizeFacility)
@@ -55,11 +60,12 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       .filter(state => state && state !== 'ALL')
   )];
 
-  const availableFacilities = normalizedFacilities.filter(facility =>
-    selectedSourceStates.length === 0 || selectedSourceStates.includes(facility.state)
+  const availableFacilities = normalizedFacilities.filter(
+    facility => selectedSourceStates.length === 0 || selectedSourceStates.includes(facility.state)
   );
 
-  const selectedFacilityRecord = availableFacilities.find(facility => facility.id === selectedFacility) || null;
+  const selectedFacilityRecord =
+    availableFacilities.find(facility => facility.id === selectedFacility) || null;
 
   useEffect(() => {
     if (!selectedFacility) return;
@@ -72,6 +78,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
   const handleRegUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
     setUploadingReg(true);
     addLog(`Uploading regulatory source: ${file.name}`);
 
@@ -82,16 +89,18 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
     try {
       const res = await fetch('/api/v6/upload', { method: 'POST', body: form });
       const data = await res.json();
+
       if (data.ok) {
         const c = data.classified;
         addLog(`✓ Uploaded ${file.name} — ${data.text_length.toLocaleString()} chars`);
-        addLog(`  Auto-classified: "${c.name}" | ${c.state || 'Federal/National'} | ${c.source_type} | Citation: ${c.citation_root || '—'}`);
+        addLog(` Auto-classified: "${c.name}" | ${c.state || 'Federal/National'} | ${c.source_type} | Citation: ${c.citation_root || '—'}`);
       } else {
         addLog(`✗ Error: ${data.error}`);
       }
     } catch (err) {
       addLog(`✗ Upload failed: ${err.message}`);
     }
+
     e.target.value = '';
     setUploadingReg(false);
     refreshPipeline();
@@ -101,12 +110,14 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
   const handlePolicyUpload = async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
+
     setUploadingPolicies(true);
     addLog(`Uploading ${files.length} policy files...`);
 
     // Upload in batches of 50
     let uploaded = 0;
     let errors = 0;
+
     for (let i = 0; i < files.length; i += 50) {
       const batch = files.slice(i, i + 50);
       const form = new FormData();
@@ -115,15 +126,18 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       try {
         const res = await fetch('/api/v6/upload', { method: 'PUT', body: form });
         const data = await res.json();
+
         uploaded += data.uploaded || 0;
         errors += data.errors || 0;
+
         const skippedCount = data.skipped || 0;
         setUploadProgress(`${uploaded}/${files.length} uploaded${skippedCount ? `, ${skippedCount} skipped (already exist)` : ''}`);
+
         if (data.errors_detail?.length) {
-          data.errors_detail.forEach(e => addLog(`  ✗ ${e.filename}: ${e.error}`));
+          data.errors_detail.forEach(e => addLog(` ✗ ${e.filename}: ${e.error}`));
         }
       } catch (err) {
-        addLog(`  ✗ Batch error: ${err.message}`);
+        addLog(` ✗ Batch error: ${err.message}`);
         errors += batch.length;
       }
     }
@@ -149,13 +163,15 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
 
         for (const src of sources) {
           if (Number(src.obligation_count) > 0) {
-            addLog(`  ⏭ ${src.name} — already has ${src.obligation_count} obligations, skipping`);
+            addLog(` ⏭ ${src.name} — already has ${src.obligation_count} obligations, skipping`);
             continue;
           }
-          addLog(`  ⏳ ${src.name} (${Number(src.text_length).toLocaleString()} chars)...`);
+
+          addLog(` ⏳ ${src.name} (${Number(src.text_length).toLocaleString()} chars)...`);
           let chunkIdx = 0;
           let totalInserted = 0;
           let done = false;
+
           while (!done) {
             try {
               const res = await fetch('/api/v6/extract', {
@@ -164,15 +180,17 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
                 body: JSON.stringify({ source_id: src.id, chunk_index: chunkIdx }),
               });
               const data = await res.json();
+
               if (!data.ok) {
-                addLog(`    ✗ Chunk ${chunkIdx}: ${data.error}`);
+                addLog(` ✗ Chunk ${chunkIdx}: ${data.error}`);
                 break;
               }
+
               if (data.done) {
                 done = true;
               } else {
                 totalInserted += data.inserted || 0;
-                addLog(`    Chunk ${data.chunk_index + 1}/${data.total_chunks}: ${data.extracted} found, ${data.inserted} inserted`);
+                addLog(` Chunk ${data.chunk_index + 1}/${data.total_chunks}: ${data.extracted} found, ${data.inserted} inserted`);
                 if (data.next_chunk !== null) {
                   chunkIdx = data.next_chunk;
                 } else {
@@ -180,12 +198,14 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
                 }
               }
             } catch (err) {
-              addLog(`    ✗ Chunk ${chunkIdx}: ${err.message}`);
+              addLog(` ✗ Chunk ${chunkIdx}: ${err.message}`);
               break;
             }
           }
-          addLog(`  ✓ ${src.name}: ${totalInserted} obligations inserted`);
+
+          addLog(` ✓ ${src.name}: ${totalInserted} obligations inserted`);
         }
+
         addLog('✓ Extraction complete');
       } catch (err) {
         addLog(`✗ Extraction error: ${err.message}`);
@@ -198,6 +218,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
         let done = false;
         let totalIndexed = 0;
         let totalProvisions = 0;
+
         while (!done) {
           const res = await fetch('/api/v6/index', {
             method: 'POST',
@@ -205,20 +226,23 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
             body: JSON.stringify({}),
           });
           const data = await res.json();
+
           if (!data.ok) {
-            addLog(`  ✗ Error: ${data.error}`);
+            addLog(` ✗ Error: ${data.error}`);
             break;
           }
+
           if (data.done) {
             done = true;
           } else if (data.skipped) {
-            addLog(`  ⏭ Skipped: ${data.reason}`);
+            addLog(` ⏭ Skipped: ${data.reason}`);
           } else {
             totalIndexed++;
             totalProvisions += data.provisions_inserted || 0;
-            addLog(`  ✓ ${data.policy_number || '?'} — ${data.title || '?'} (${data.provisions_inserted} provisions) [${data.remaining} left]`);
+            addLog(` ✓ ${data.policy_number || '?'} — ${data.title || '?'} (${data.provisions_inserted} provisions) [${data.remaining} left]`);
           }
         }
+
         addLog(`✓ Indexing complete: ${totalIndexed} policies, ${totalProvisions} provisions`);
       } catch (err) {
         addLog(`✗ Indexing error: ${err.message}`);
@@ -229,6 +253,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       addLog('Generating embeddings (Voyage AI)...');
       let remaining = 999;
       let rounds = 0;
+
       while (remaining > 0 && rounds < 50) {
         try {
           const res = await fetch('/api/v6/embed', {
@@ -238,30 +263,35 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
           });
           const data = await res.json();
           remaining = Number(data.remaining?.obls_remaining || 0) + Number(data.remaining?.provs_remaining || 0);
-          addLog(`  Embedded batch — ${remaining} remaining`);
+          addLog(` Embedded batch — ${remaining} remaining`);
           rounds++;
         } catch (err) {
           addLog(`✗ Embedding error: ${err.message}`);
           break;
         }
       }
+
       addLog(`✓ Embedding complete after ${rounds} batches`);
     }
 
     if (stepId === 'assess') {
       // Show run configuration panel instead of immediately running
       setRunning(null);
+
       try {
         const [srcRes, facRes] = await Promise.all([
           fetch('/api/v6/extract').then(r => r.json()),
           fetch('/api/v6/facilities').then(r => r.json()).catch(() => ({ facilities: [] })),
         ]);
+
         const sources = (srcRes.sources || []).map(s => ({
           ...s,
           obligation_count: Number(s.obligation_count),
         }));
+
         setRegSources(sources);
         setFacilities(facRes.facilities || []);
+
         // Pre-select sources with obligations
         setSelectedSources(new Set(sources.filter(s => s.obligation_count > 0).map(s => s.id)));
         setRunLabel('');
@@ -271,6 +301,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       } catch (err) {
         addLog(`✗ Failed to load run config: ${err.message}`);
       }
+
       return;
     }
 
@@ -290,6 +321,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       .filter(s => selectedSources.has(s.id))
       .map(s => `${s.citation_root || s.name} (${s.obligation_count})`)
       .join(', ');
+
     const totalObligations = regSources
       .filter(s => selectedSources.has(s.id))
       .reduce((sum, s) => sum + s.obligation_count, 0);
@@ -304,10 +336,11 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
 
     setShowRunConfig(false);
     setRunning('assess');
+
     addLog(`Starting assessment: ${totalObligations} obligations from ${sourceIds.length} sources`);
-    addLog(`  Sources: ${sourceNames}`);
-    addLog(`  Facility: ${selectedFacilityRecord.name}${selectedFacilityRecord.abbreviation ? ` (${selectedFacilityRecord.abbreviation})` : ''}`);
-    addLog(`  Label: ${label}`);
+    addLog(` Sources: ${sourceNames}`);
+    addLog(` Facility: ${selectedFacilityRecord.name}${selectedFacilityRecord.abbreviation ? ` (${selectedFacilityRecord.abbreviation})` : ''}`);
+    addLog(` Label: ${label}`);
 
     try {
       const statsRes = await fetch('/api/v6/assess');
@@ -317,7 +350,16 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       let done = false;
       let runId = null;
       let totalAssessed = 0;
-      const statusCounts = { COVERED: 0, PARTIAL: 0, GAP: 0, CONFLICTING: 0, NOT_APPLICABLE: 0, NEEDS_LEGAL_REVIEW: 0, REVIEW_NEEDED: 0 };
+
+      const statusCounts = {
+        COVERED: 0,
+        PARTIAL: 0,
+        GAP: 0,
+        CONFLICTING: 0,
+        NOT_APPLICABLE: 0,
+        NEEDS_LEGAL_REVIEW: 0,
+        REVIEW_NEEDED: 0,
+      };
 
       while (!done) {
         try {
@@ -336,27 +378,31 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(reqBody),
           });
+
           const data = await res.json();
           if (!data.ok) {
-            addLog(`  ✗ Error: ${data.error}`);
+            addLog(` ✗ Error: ${data.error}`);
             break;
           }
+
           if (data.done) {
             done = true;
           } else {
             if (!runId) runId = data.map_run_id;
             totalAssessed++;
             statusCounts[data.status] = (statusCounts[data.status] || 0) + 1;
+
             const policyInfo = data.covering_policy ? ` → ${data.covering_policy}` : '';
-            addLog(`  ${data.status === 'COVERED' ? '✓' : data.status === 'GAP' ? '✗' : '◐'} ${data.citation}: ${data.status}${policyInfo} (${data.candidates} candidates) [${data.remaining} left]`);
+            addLog(` ${data.status === 'COVERED' ? '✓' : data.status === 'GAP' ? '✗' : '◐'} ${data.citation}: ${data.status}${policyInfo} (${data.candidates} candidates) [${data.remaining} left]`);
           }
         } catch (err) {
-          addLog(`  ✗ Error: ${err.message}`);
+          addLog(` ✗ Error: ${err.message}`);
           break;
         }
       }
+
       addLog(`✓ Assessment complete: ${totalAssessed} assessed`);
-      addLog(`  COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | N/A: ${statusCounts.NOT_APPLICABLE} | CONFLICTING: ${statusCounts.CONFLICTING} | REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW + statusCounts.REVIEW_NEEDED}`);
+      addLog(` COVERED: ${statusCounts.COVERED} | PARTIAL: ${statusCounts.PARTIAL} | GAP: ${statusCounts.GAP} | N/A: ${statusCounts.NOT_APPLICABLE} | CONFLICTING: ${statusCounts.CONFLICTING} | REVIEW: ${statusCounts.NEEDS_LEGAL_REVIEW + statusCounts.REVIEW_NEEDED}`);
     } catch (err) {
       addLog(`✗ Assessment error: ${err.message}`);
     }
@@ -394,6 +440,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       {/* Pipeline status */}
       <div className="card p-4 space-y-3">
         <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Pipeline Status</p>
+
         {steps.map(step => (
           <div key={step.id} className="flex items-center gap-3">
             <div className={`w-2.5 h-2.5 rounded-full ${stepColors[step.status]}`} />
@@ -401,15 +448,18 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
               <p className="text-sm font-medium">{step.label}</p>
               <p className="text-xs text-stone-400">{step.detail}</p>
             </div>
-            {(step.status === 'ready' || step.status === 'done') && step.id !== 'upload_regs' && step.id !== 'upload_policies' && (
-              <button
-                onClick={() => runStep(step.id)}
-                disabled={running !== null}
-                className="text-xs px-3 py-1 bg-stone-900 text-white rounded hover:bg-stone-800 disabled:opacity-50"
-              >
-                {running === step.id ? 'Running...' : step.status === 'done' ? 'Re-run' : 'Run'}
-              </button>
-            )}
+
+            {(step.status === 'ready' || step.status === 'done') &&
+              step.id !== 'upload_regs' &&
+              step.id !== 'upload_policies' && (
+                <button
+                  onClick={() => runStep(step.id)}
+                  disabled={running !== null}
+                  className="text-xs px-3 py-1 bg-stone-900 text-white rounded hover:bg-stone-800 disabled:opacity-50"
+                >
+                  {running === step.id ? 'Running...' : step.status === 'done' ? 'Re-run' : 'Run'}
+                </button>
+              )}
           </div>
         ))}
       </div>
@@ -419,7 +469,12 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
         <div className="card p-4 space-y-4 border-2 border-amber-400">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold">Configure Assessment Run</p>
-            <button onClick={() => setShowRunConfig(false)} className="text-xs text-stone-400 hover:text-stone-600">Cancel</button>
+            <button
+              onClick={() => setShowRunConfig(false)}
+              className="text-xs text-stone-400 hover:text-stone-600"
+            >
+              Cancel
+            </button>
           </div>
 
           {/* Reg source selection */}
@@ -440,14 +495,18 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
                 </label>
               ))}
             </div>
+
             <p className="text-xs text-stone-400 mt-2">
-              Selected: {selectedSources.size} sources, {regSources.filter(s => selectedSources.has(s.id)).reduce((sum, s) => sum + s.obligation_count, 0)} obligations
+              Selected: {selectedSources.size} sources,{' '}
+              {regSources.filter(s => selectedSources.has(s.id)).reduce((sum, s) => sum + s.obligation_count, 0)} obligations
             </p>
           </div>
 
           {/* Facility selection */}
           <div>
-            <label className="text-xs font-medium text-stone-500">Facility <span className="text-red-600">*</span></label>
+            <label className="text-xs font-medium text-stone-500">
+              Facility <span className="text-red-600">*</span>
+            </label>
             <select
               value={selectedFacility}
               onChange={(e) => setSelectedFacility(e.target.value)}
@@ -462,11 +521,13 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
                 </option>
               ))}
             </select>
+
             <p className="text-xs text-stone-400 mt-1">
               {availableFacilities.length === 0
                 ? 'No facilities match the currently selected regulatory-source states.'
                 : 'Runs require an explicit facility and will not default to the first facility by state.'}
             </p>
+
             {selectedFacilityRecord && (
               <p className="text-xs text-stone-500 mt-1">
                 {selectedFacilityRecord.state || 'Unknown state'}
@@ -489,6 +550,7 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
                 className="w-full mt-1 px-2 py-1.5 text-sm border border-stone-300 rounded"
               />
             </div>
+
             <div>
               <label className="text-xs font-medium text-stone-500">Scope Tag</label>
               <input
@@ -517,11 +579,20 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       {/* Upload: Regulatory Sources */}
       <div className="card p-4 space-y-3">
         <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Regulatory Source</p>
-        <p className="text-sm text-stone-600">Pick a file — Claude will auto-detect the source name, state, type, and citation root</p>
+        <p className="text-sm text-stone-600">
+          Pick a file — Claude will auto-detect the source name, state, type, and citation root
+        </p>
+
         <div className="flex items-center gap-3">
           <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
             {uploadingReg ? 'Uploading & classifying...' : 'Choose File'}
-            <input type="file" accept=".docx,.doc,.pdf,.txt" onChange={handleRegUpload} disabled={uploadingReg} className="hidden" />
+            <input
+              type="file"
+              accept=".docx,.doc,.pdf,.txt"
+              onChange={handleRegUpload}
+              disabled={uploadingReg}
+              className="hidden"
+            />
           </label>
           <p className="text-xs text-stone-400">.doc, .docx, .pdf, or .txt — one at a time</p>
         </div>
@@ -530,19 +601,31 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
       {/* Upload: Policies */}
       <div className="card p-4 space-y-3">
         <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Upload Policy Documents</p>
+
         <div className="flex items-end gap-3">
           <div className="flex-1">
             <p className="text-sm">Select all policy Word docs at once — they'll be uploaded in batches of 50</p>
             {uploadProgress && <p className="text-xs text-amber-600 mt-1">{uploadProgress}</p>}
           </div>
+
           <div>
             <label className="text-xs px-3 py-1.5 bg-stone-900 text-white rounded hover:bg-stone-800 cursor-pointer inline-block">
               {uploadingPolicies ? 'Uploading...' : 'Choose Files'}
-              <input type="file" accept=".docx,.doc,.pdf,.txt" multiple onChange={handlePolicyUpload} disabled={uploadingPolicies} className="hidden" />
+              <input
+                type="file"
+                accept=".docx,.doc,.pdf,.txt"
+                multiple
+                onChange={handlePolicyUpload}
+                disabled={uploadingPolicies}
+                className="hidden"
+              />
             </label>
           </div>
         </div>
-        <p className="text-xs text-stone-400">Select multiple files (Ctrl/Cmd+A in file picker). Accepts .doc, .docx, .pdf, .txt</p>
+
+        <p className="text-xs text-stone-400">
+          Select multiple files (Ctrl/Cmd+A in file picker). Accepts .doc, .docx, .pdf, .txt
+        </p>
       </div>
 
       {/* Run log */}
@@ -550,11 +633,28 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
         <div className="card p-4">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-medium text-stone-500 uppercase tracking-wider">Activity Log</p>
-            <button onClick={() => setRunLog([])} className="text-xs text-stone-400 hover:text-stone-600">Clear</button>
+            <button
+              onClick={() => setRunLog([])}
+              className="text-xs text-stone-400 hover:text-stone-600"
+            >
+              Clear
+            </button>
           </div>
+
           <div className="bg-stone-950 text-stone-300 rounded p-3 max-h-[300px] overflow-y-auto font-mono text-xs space-y-0.5">
             {runLog.map((line, i) => (
-              <div key={i} className={line.includes('✗') ? 'text-red-400' : line.includes('✓') ? 'text-emerald-400' : ''}>{line}</div>
+              <div
+                key={i}
+                className={
+                  line.includes('✗')
+                    ? 'text-red-400'
+                    : line.includes('✓')
+                      ? 'text-emerald-400'
+                      : ''
+                }
+              >
+                {line}
+              </div>
             ))}
           </div>
         </div>
@@ -562,5 +662,3 @@ export default function PipelineMode({ running, setRunning, runLog, setRunLog, a
     </div>
   );
 }
-
-// ─── CSV EXPORT ─────────────────────────────────────────────
