@@ -5,8 +5,12 @@ import { eq, sql } from 'drizzle-orm';
 import { findCandidatesHybrid, HIGH_RISK_TOPICS } from '@/lib/matching';
 import { ASSESS_PROMPT } from '@/lib/prompts';
 import {
-  buildFacilityContextString, findTriggerFamily, reasonMatchesFamily,
-  reasonHasNegation, BOILERPLATE_BLACKLIST, LOC_KEYWORDS
+  buildFacilityContextString,
+  canonicalize,
+  extractLocKeywords,
+  findTriggerFamily,
+  reasonSupportsFamily,
+  BOILERPLATE_BLACKLIST,
 } from '@/lib/facility-attributes';
 import { logAuditEvent, PROMPT_VERSIONS, MODEL_ID } from '@/lib/audit';
 import { ulid } from '@/lib/ulid';
@@ -36,6 +40,31 @@ const ADMIN_MARKERS = [
   /accreditation.*process/i,
 ];
 
+const SHORT_LOC_TRIGGER_ALLOWLIST = new Set(['op', 'php', 'iop']);
+
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function extractAllTriggerLocs(triggerSpan, locApplicability) {
+  const fromTrigger = extractLocKeywords(triggerSpan || '');
+
+  const locValues = Array.isArray(locApplicability)
+    ? locApplicability
+    : (locApplicability ? [locApplicability] : []);
+
+  const fromApplicability = locValues.flatMap(v => extractLocKeywords(String(v)));
+
+  return unique([...fromTrigger, ...fromApplicability]);
+}
+
+function extractFacilityLocs(facility) {
+  const facilityLocs = Array.isArray(facility?.levels_of_care)
+    ? facility.levels_of_care
+    : [];
+
+  return unique(facilityLocs.flatMap(v => extractLocKeywords(String(v))));
+}
 
 // ═══════════════════════════════════════════════════════
 // Provision capping with citation-pinned bypass + similarity ranking
@@ -199,6 +228,12 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
 
   const allProvTexts = allProvisionTexts || [];
 
+  const canonicalRequirementText = canonicalize(requirementText);
+  const canonicalCitationText = canonicalize(citationText);
+  const canonicalLocLine = canonicalize(locLine);
+  const canonicalFacilityContextBlock = canonicalize(facilityContextBlock);
+  const canonicalAllProvTexts = allProvTexts.map(t => canonicalize(t));
+
 
   // ═══════════════════════════════════════════════════════
   // NOT_APPLICABLE validation (3-path: LOC / Activity / Reject)
@@ -228,47 +263,45 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
         errors.push(`inapplicability_reason is boilerplate: "${parsed.inapplicability_reason}"`);
       }
 
+      const canonicalTriggerSpan = canonicalize(parsed.trigger_span);
+      const canonicalReason = canonicalize(parsed.inapplicability_reason);
+
       // trigger_span must be substring of requirement, citation, or LOC line
-      const triggerInReq = requirementText.includes(parsed.trigger_span);
-      const triggerInCit = citationText.includes(parsed.trigger_span);
-      const triggerInLoc = locLine.includes(parsed.trigger_span);
+      const triggerInReq = canonicalRequirementText.includes(canonicalTriggerSpan);
+      const triggerInCit = canonicalCitationText.includes(canonicalTriggerSpan);
+      const triggerInLoc = canonicalLocLine.includes(canonicalTriggerSpan);
       if (!triggerInReq && !triggerInCit && !triggerInLoc) {
         errors.push('trigger_span not found as substring of Requirement, Citation, or LOC Applicability');
       }
 
       // inapplicability_reason must be substring of facility context or a provision
-      const reasonInFacility = facilityContextBlock.includes(parsed.inapplicability_reason);
-      const reasonInProvision = allProvTexts.some(t => t.includes(parsed.inapplicability_reason));
+      const reasonInFacility = canonicalFacilityContextBlock.includes(canonicalReason);
+      const reasonInProvision = canonicalAllProvTexts.some(t => t.includes(canonicalReason));
       if (!reasonInFacility && !reasonInProvision) {
         errors.push('inapplicability_reason not found as substring of facility context or any provision');
       }
 
-      // Minimum substance: trigger_span >= 8 chars
-      if (parsed.trigger_span.length < 8) {
-        errors.push(`trigger_span too short (${parsed.trigger_span.length} chars, need >= 8)`);
+      // Minimum substance: trigger_span >= 8 chars unless it is a known short LOC token
+      const matchedShortLocs = extractLocKeywords(parsed.trigger_span || '');
+      const shortLocTriggerAllowed =
+        matchedShortLocs.length > 0 &&
+        matchedShortLocs.every(k => SHORT_LOC_TRIGGER_ALLOWLIST.has(k));
+
+      if (canonicalTriggerSpan.length < 8 && !shortLocTriggerAllowed) {
+        errors.push(`trigger_span too short (${parsed.trigger_span.length} chars, need >= 8 unless it is a known short LOC token)`);
       }
 
       // ── Three-path N/A validation (using dynamic attribute registry) ──
-      const triggerLower = parsed.trigger_span.toLowerCase();
-
-      // Determine which path applies
-      const triggerHasLOC = [...LOC_KEYWORDS].some(k => triggerLower.includes(k))
-        || triggerInLoc; // trigger source is LOC Applicability line
+      const triggerLocTokens = extractLocKeywords(parsed.trigger_span || '');
+      const applicabilityLocTokens = extractLocKeywords(locLine || '');
+      const triggerHasLOC = triggerLocTokens.length > 0 || applicabilityLocTokens.length > 0 || triggerInLoc;
 
       if (triggerHasLOC) {
         // PATH A — LOC-based N/A
-        // Programmatic check: verify the triggered LOC isn't in facility's levels_of_care
-        const facilityLOCs = (facility?.levels_of_care || []).map(l => l.toLowerCase());
-        const triggerLOCTokens = [...LOC_KEYWORDS].filter(k => triggerLower.includes(k));
+        const facilityLOCs = extractFacilityLocs(facility);
+        const allTriggerLOCs = extractAllTriggerLocs(parsed.trigger_span, obligation.loc_applicability);
 
-        const locValues = obligation.loc_applicability
-          ? (Array.isArray(obligation.loc_applicability) ? obligation.loc_applicability : [obligation.loc_applicability])
-          : [];
-        const allTriggerLOCs = [...triggerLOCTokens, ...locValues.map(v => v.toLowerCase())];
-
-        const facilityHasLOC = allTriggerLOCs.some(tl =>
-          facilityLOCs.some(fl => fl.toLowerCase().includes(tl) || tl.includes(fl.toLowerCase()))
-        );
+        const facilityHasLOC = allTriggerLOCs.some(t => facilityLOCs.includes(t));
         if (facilityHasLOC) {
           errors.push(`LOC-based N/A rejected: facility offers LOC (trigger: ${allTriggerLOCs.join(', ')}, facility: ${facilityLOCs.join(', ')})`);
         }
@@ -279,19 +312,14 @@ function validateV7Assessment(parsed, candidatePolicies, obligation, facility, a
 
         if (match) {
           // PATH B — Activity-based N/A (registry-driven)
-          if (!reasonMatchesFamily(parsed.inapplicability_reason, match.def)) {
-            errors.push(`Activity N/A: inapplicability_reason lacks token from ${match.key} family (${match.def.trigger_family.join(', ')})`);
+          if (!reasonSupportsFamily(parsed.inapplicability_reason, match.def)) {
+            errors.push(`Activity N/A: inapplicability_reason does not support ${match.key} family (${match.def.trigger_family.join(', ')})`);
           }
-          if (match.def.negation_required && !reasonHasNegation(parsed.inapplicability_reason)) {
-            errors.push('Activity N/A: inapplicability_reason lacks negation marker (prohibit, does not, NO —, etc.)');
-          }
-
         } else {
           // PATH C — Unknown trigger: reject N/A entirely
           errors.push('NOT_APPLICABLE rejected: trigger does not match known LOC or any registered attribute family');
         }
       }
-    }
 
     // Set retry instruction if N/A validation failed
     if (errors.length > 0) {
@@ -502,7 +530,7 @@ export async function POST(req) {
       runId = ulid('run');
       await db.execute(sql`
         INSERT INTO map_runs (id, org_id, facility_id, state, scope, label, status, model_id, prompt_version, reg_sources_used, started_at)
-        VALUES (${runId}, 'ars', ${effectiveFacilityId}, ${effectiveRunState}, ${runScope || 'baseline'}, ${label || `${effectiveRunState} â€” prompt v7`}, 'running',
+        VALUES (${runId}, 'ars', ${effectiveFacilityId}, ${effectiveRunState}, ${runScope || 'baseline'}, ${label || `${effectiveRunState} — prompt v8`}, 'running',
                 ${MODEL_ID}, ${PROMPT_VERSIONS.ASSESS_COVERAGE}, ${scopedSourceIds ? JSON.stringify(scopedSourceIds) : null}, NOW())
         ON CONFLICT (id) DO NOTHING
       `);
