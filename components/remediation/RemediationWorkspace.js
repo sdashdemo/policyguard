@@ -309,7 +309,7 @@ function FiltersBar({ values, onChange, onReset, pending }) {
 
 function GroupsPane({ state, selectedPolicyNumber, page, onPageChange, onSelectPolicy }) {
   return (
-    <section className="card overflow-hidden">
+    <section className="card flex h-full min-h-0 flex-col overflow-hidden">
       <div className="border-b border-stone-200 bg-stone-50 px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -325,7 +325,7 @@ function GroupsPane({ state, selectedPolicyNumber, page, onPageChange, onSelectP
         </div>
       </div>
 
-      <div className="max-h-[68vh] overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {state.loading ? <Spinner /> : null}
 
         {!state.loading && state.error ? (
@@ -411,7 +411,7 @@ function GroupsPane({ state, selectedPolicyNumber, page, onPageChange, onSelectP
 
 function ItemsPane({ state, selectedPolicyNumber, selectedAssessmentId, onOpenAssessment }) {
   return (
-    <section className="card overflow-hidden">
+    <section className="card flex h-full min-h-0 flex-col overflow-hidden">
       <div className="border-b border-stone-200 bg-stone-50 px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -428,7 +428,7 @@ function ItemsPane({ state, selectedPolicyNumber, selectedAssessmentId, onOpenAs
         </div>
       </div>
 
-      <div className="overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         {state.loading ? <Spinner /> : null}
 
         {!state.loading && state.error ? (
@@ -448,7 +448,7 @@ function ItemsPane({ state, selectedPolicyNumber, selectedAssessmentId, onOpenAs
 
         {!state.loading && !state.error && state.items?.length ? (
           <table className="min-w-full text-sm">
-            <thead className="bg-white text-left text-[11px] uppercase tracking-wide text-stone-500">
+            <thead className="sticky top-0 z-10 bg-white text-left text-[11px] uppercase tracking-wide text-stone-500">
               <tr className="border-b border-stone-200">
                 <th className="px-4 py-3">Citation</th>
                 <th className="px-4 py-3">Requirement</th>
@@ -485,7 +485,19 @@ function ItemsPane({ state, selectedPolicyNumber, selectedAssessmentId, onOpenAs
                     <td className="px-4 py-3 align-top text-stone-600">{item.confidence || '-'}</td>
                     <td className="px-4 py-3 align-top text-stone-600">{item.sourceName || '-'}</td>
                     <td className="px-4 py-3 align-top text-stone-600">{item.riskTier || '-'}</td>
-                    <td className="px-4 py-3 align-top"><ReviewPill disposition={item.reviewDisposition} /></td>
+                    <td className="px-4 py-3 align-top">
+                      <ReviewPill disposition={item.reviewDisposition} />
+                      {item.overrideStatus ? (
+                        <p className="mt-1 text-[11px] text-stone-500">
+                          Override: {formatLabel(item.overrideStatus)}
+                        </p>
+                      ) : null}
+                      {item.reviewNote ? (
+                        <p className="mt-1 max-w-[16rem] text-[11px] leading-5 text-stone-500">
+                          {truncateText(item.reviewNote, 88)}
+                        </p>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3 align-top">
                       {item.hasDefect ? (
                         <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 ring-1 ring-red-200">
@@ -726,7 +738,7 @@ export default function RemediationWorkspace({ runId }) {
         }, { resetPage: false })}
       />
 
-      <div className="grid gap-5 lg:grid-cols-[22rem,minmax(0,1fr)]">
+      <div className="grid gap-5 lg:min-h-[34rem] lg:grid-cols-[22rem,minmax(0,1fr)] lg:h-[70vh]">
         <GroupsPane
           state={groupsState}
           selectedPolicyNumber={selectedPolicyNumber}
@@ -750,6 +762,7 @@ export default function RemediationWorkspace({ runId }) {
         error={detailState.error}
         detail={detailState.data}
         onClose={() => replaceParams({ assessmentId: null }, { resetPage: false })}
+        onReviewSaved={refreshRemediationData}
       />
     </div>
   );
