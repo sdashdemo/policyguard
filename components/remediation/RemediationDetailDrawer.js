@@ -121,6 +121,11 @@ export default function RemediationDetailDrawer({
   const [dismissReason, setDismissReason] = useState('');
   const [dismissNote, setDismissNote] = useState('');
   const [mutationState, setMutationState] = useState({ action: null, error: null });
+  const [suggestFixState, setSuggestFixState] = useState({
+    loading: false,
+    data: null,
+    error: null,
+  });
 
   const assessment = detail?.assessment || null;
   const obligation = detail?.obligation || null;
@@ -144,6 +149,7 @@ export default function RemediationDetailDrawer({
     setDismissReason(normalizeDraftValue(review?.dismiss_reason));
     setDismissNote(normalizeDraftValue(review?.disposition === 'dismissed' ? review?.note : ''));
     setMutationState({ action: null, error: null });
+    setSuggestFixState({ loading: false, data: null, error: null });
   }, [
     assessmentId,
     defect?.defect_class,
@@ -185,6 +191,42 @@ export default function RemediationDetailDrawer({
       onReviewSaved?.(result);
     } catch (err) {
       setMutationState({ action: null, error: err.message });
+    }
+  }
+
+  async function requestSuggestFix() {
+    if (!assessmentId) return;
+
+    setSuggestFixState((current) => ({
+      loading: true,
+      data: current.data,
+      error: null,
+    }));
+
+    try {
+      const response = await fetch(`/api/v6/remediation/assessments/${encodeURIComponent(assessmentId)}/suggest-fix`, {
+        method: 'POST',
+        cache: 'no-store',
+      });
+
+      let result = null;
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(result?.error || `Suggest Fix failed (${response.status})`);
+      }
+
+      setSuggestFixState({ loading: false, data: result, error: null });
+    } catch (err) {
+      setSuggestFixState((current) => ({
+        loading: false,
+        data: current.data,
+        error: err.message,
+      }));
     }
   }
 
@@ -244,6 +286,30 @@ export default function RemediationDetailDrawer({
 
             <div className="max-h-[40vh] overflow-y-auto pr-1">
               <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded border border-stone-200 bg-white p-3 sm:col-span-2">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-stone-900">Suggest Fix</p>
+                      <p className="text-xs leading-5 text-stone-500">
+                        Generate draft remediation language and a quick policy-health read for this one item. This suggestion is not saved.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={actionsDisabled || suggestFixState.loading}
+                      onClick={requestSuggestFix}
+                      className="rounded bg-stone-900 px-3 py-2 text-sm font-medium text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {suggestFixState.loading ? 'Generating...' : (suggestFixState.data ? 'Regenerate Suggestion' : 'Suggest Fix')}
+                    </button>
+                  </div>
+                  {suggestFixState.error ? (
+                    <p className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      {suggestFixState.error}
+                    </p>
+                  ) : null}
+                </div>
+
                 <div className="rounded border border-stone-200 bg-white p-3">
                   <div className="space-y-2">
                     <div>
@@ -497,6 +563,60 @@ export default function RemediationDetailDrawer({
                   </div>
                 ) : null}
               </section>
+
+              {suggestFixState.data ? (
+                <section className="card space-y-4 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-semibold text-stone-900">Suggested Fix</h3>
+                      <p className="text-xs text-stone-500">
+                        Stateless draft output for this assessment. Regenerate any time if you want a fresh pass.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {suggestFixState.data.metadata?.hasMatchedPolicy ? (
+                        <MetaPill label={`Matched Policy: ${suggestFixState.data.metadata.policyNumber || 'Unknown'}`} />
+                      ) : (
+                        <MetaPill label="No Matched Policy" tone="amber" />
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-stone-400">Summary</p>
+                    <p className="mt-1 text-sm leading-6 text-stone-700">{suggestFixState.data.summary}</p>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-stone-400">Draft Language / Guidance</p>
+                    <div className="mt-1 rounded border border-stone-200 bg-stone-50 px-3 py-3">
+                      <pre className="whitespace-pre-wrap text-sm leading-6 text-stone-800">{suggestFixState.data.suggestedFix}</pre>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-stone-400">Policy Health</p>
+                    {suggestFixState.data.policyHealth ? (
+                      <div className="mt-1 space-y-3 rounded border border-stone-200 bg-white px-3 py-3">
+                        <p className="text-sm leading-6 text-stone-700">{suggestFixState.data.policyHealth.summary}</p>
+                        {suggestFixState.data.policyHealth.issues?.length ? (
+                          <ul className="list-disc space-y-1 pl-5 text-sm leading-6 text-stone-700">
+                            {suggestFixState.data.policyHealth.issues.map((issue) => (
+                              <li key={issue}>{issue}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-sm text-stone-500">No specific policy-health issues were returned.</p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-sm text-stone-500">
+                        No matched policy was available, so the suggestion focuses on best-effort remediation guidance.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              ) : null}
 
               <section className="card space-y-3 p-4">
                 <div>
