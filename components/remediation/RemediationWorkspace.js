@@ -24,6 +24,14 @@ function buildQueryString(searchParams, keys) {
   return params.toString();
 }
 
+function parseFilenameFromDisposition(disposition) {
+  if (!disposition) return null;
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+  const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+  return filenameMatch?.[1] || null;
+}
+
 async function fetchJson(url, signal) {
   const response = await fetch(url, { method: 'GET', cache: 'no-store', signal });
   let payload = null;
@@ -68,7 +76,16 @@ function ReviewPill({ disposition }) {
   );
 }
 
-function SummarySection({ runId, state, refreshing, onRefresh, onSelectPolicy }) {
+function SummarySection({
+  runId,
+  state,
+  refreshing,
+  exporting,
+  exportError,
+  onRefresh,
+  onExport,
+  onSelectPolicy,
+}) {
   if (state.loading) return <Spinner />;
   if (state.error) {
     return (
@@ -96,6 +113,14 @@ function SummarySection({ runId, state, refreshing, onRefresh, onSelectPolicy })
           <div className="text-right text-xs text-stone-500">Review progress follows persisted remediation dispositions only.</div>
           <button
             type="button"
+            onClick={onExport}
+            disabled={exporting}
+            className="rounded border border-stone-200 px-3 py-1.5 text-xs font-medium text-stone-500 hover:bg-stone-50 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {exporting ? 'Exporting...' : 'Export XLSX'}
+          </button>
+          <button
+            type="button"
             onClick={onRefresh}
             disabled={refreshing}
             className="rounded border border-stone-200 px-3 py-1.5 text-xs font-medium text-stone-500 hover:bg-stone-50 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50"
@@ -104,6 +129,10 @@ function SummarySection({ runId, state, refreshing, onRefresh, onSelectPolicy })
           </button>
         </div>
       </div>
+
+      {exportError ? (
+        <p className="text-sm text-red-700">{exportError}</p>
+      ) : null}
 
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatCard label="Gaps" value={summary.gapCount || 0} color="text-red-700" />
@@ -524,6 +553,7 @@ export default function RemediationWorkspace({ runId }) {
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [exportState, setExportState] = useState({ loading: false, error: null });
   const [summaryState, setSummaryState] = useState({ loading: true, data: null, error: null });
   const [groupsState, setGroupsState] = useState({ loading: true, data: null, error: null });
   const [itemsState, setItemsState] = useState({ loading: false, items: [], error: null, requestKey: null });
@@ -549,12 +579,65 @@ export default function RemediationWorkspace({ runId }) {
     ? `${runId}:${itemsQuery}:${refreshVersion}`
     : null;
   const isRefreshing = summaryState.loading || groupsState.loading || itemsState.loading || detailState.loading;
+  const currentFilters = {
+    status: status || null,
+    source: source || null,
+    domain: domain || null,
+    riskTier: riskTier || null,
+    confidenceMin: confidenceMin ? Number.parseInt(confidenceMin, 10) : null,
+    confidenceMax: confidenceMax ? Number.parseInt(confidenceMax, 10) : null,
+    q: q || null,
+    includeDefects: includeDefects ? true : null,
+  };
 
   // Step 7 review actions can call this after a successful PUT to refetch every
   // route-backed panel without disturbing the current URL-driven workspace state.
   const refreshRemediationData = useCallback(() => {
     setRefreshVersion((current) => current + 1);
   }, []);
+
+  const handleExportXlsx = useCallback(async () => {
+    setExportState({ loading: true, error: null });
+
+    try {
+      const response = await fetch('/api/v6/remediation/export', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId,
+          filters: currentFilters,
+          sort,
+          pageSize: Number.parseInt(pageSize, 10) || null,
+        }),
+      });
+
+      if (!response.ok) {
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        throw new Error(payload?.error || `Export failed (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const filename = parseFilenameFromDisposition(response.headers.get('Content-Disposition'))
+        || `remediation_${runId}.xlsx`;
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(objectUrl);
+      setExportState({ loading: false, error: null });
+    } catch (error) {
+      setExportState({ loading: false, error: error.message });
+    }
+  }, [currentFilters, pageSize, runId, sort]);
 
   const replaceParams = useCallback((updates, options = {}) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -713,7 +796,10 @@ export default function RemediationWorkspace({ runId }) {
         runId={runId}
         state={summaryState}
         refreshing={isRefreshing}
+        exporting={exportState.loading}
+        exportError={exportState.error}
         onRefresh={refreshRemediationData}
+        onExport={handleExportXlsx}
         onSelectPolicy={(policyNumber) => replaceParams({ policyNumber, assessmentId: null }, { resetPage: false })}
       />
 
