@@ -3,8 +3,12 @@
 ~$*.xlsx
 node_modules/
 .next/
-artifacts/*.xlsx
-artifacts/*.json
+.codex-dev.log
+.codex-dev.err
+artifacts/
+briefings/
+docs/ITERATION_1_COMPLETE.md
+docs/ITERATION_2_PLAN.md
 claude notes/
 claudenotes/
 .claude/

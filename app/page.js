@@ -47,7 +47,7 @@ export default function PolicyGuard() {
             <span className="w-7 h-7 bg-white text-stone-900 rounded flex items-center justify-center text-xs font-bold">PG</span>
             <div>
               <p className="text-sm font-semibold text-white">PolicyGuard</p>
-              <p className="text-[10px] text-stone-500">v7 · ARS Compliance</p>
+              <p className="text-[10px] text-stone-500">v8 · ARS Compliance</p>
             </div>
           </div>
         </div>

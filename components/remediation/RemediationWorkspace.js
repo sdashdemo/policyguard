@@ -8,6 +8,7 @@ import RemediationDetailDrawer from '@/components/remediation/RemediationDetailD
 const FILTER_KEYS = ['status', 'source', 'domain', 'riskTier', 'confidenceMin', 'confidenceMax', 'q', 'includeDefects'];
 const GROUP_QUERY_KEYS = [...FILTER_KEYS, 'sort', 'page', 'pageSize'];
 const ITEMS_QUERY_KEYS = [...FILTER_KEYS, 'policyNumber'];
+const UNASSIGNED_BUCKET = 'Unassigned';
 
 function normalizeString(value) {
   if (value === null || value === undefined) return null;
@@ -55,6 +56,55 @@ function truncateText(value, maxLength = 160) {
   if (!value) return '';
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function getPolicyExportState(selectedPolicyNumber, selectedGroup, groupsLoading) {
+  if (groupsLoading) {
+    return {
+      disabled: true,
+      helperText: 'Policy export will be available after the selected group metadata loads.',
+    };
+  }
+
+  if (!selectedPolicyNumber) {
+    return {
+      disabled: true,
+      helperText: 'Select a policy group to export a standalone policy workbook.',
+    };
+  }
+
+  if (!selectedGroup) {
+    return {
+      disabled: true,
+      helperText: 'The selected policy group is not available on the current page yet.',
+    };
+  }
+
+  if (selectedPolicyNumber === UNASSIGNED_BUCKET) {
+    return {
+      disabled: true,
+      helperText: 'Unassigned rows do not resolve to a standalone policy export.',
+    };
+  }
+
+  if ((selectedGroup.distinctPolicyIds || 0) > 1) {
+    return {
+      disabled: true,
+      helperText: 'This policy-number group spans multiple canonical policy records, so standalone export stays disabled for now.',
+    };
+  }
+
+  if (!selectedGroup.canonicalPolicyId) {
+    return {
+      disabled: true,
+      helperText: 'This group does not have a canonical policy record yet.',
+    };
+  }
+
+  return {
+    disabled: false,
+    helperText: 'Export uses the canonical linked policy plus the current remediation filters.',
+  };
 }
 
 function getReviewTone(disposition) {
@@ -343,7 +393,7 @@ function GroupsPane({ state, selectedPolicyNumber, page, onPageChange, onSelectP
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-stone-900">Policy Groups</h2>
-            <p className="text-xs text-stone-500">Grouped by covering policy number, with an Unassigned bucket.</p>
+            <p className="text-xs text-stone-500">Grouped by canonical policy link, with an Unassigned bucket.</p>
           </div>
           {state.data ? (
             <div className="text-right text-[11px] text-stone-500">
@@ -438,7 +488,17 @@ function GroupsPane({ state, selectedPolicyNumber, page, onPageChange, onSelectP
   );
 }
 
-function ItemsPane({ state, selectedPolicyNumber, selectedAssessmentId, onOpenAssessment }) {
+function ItemsPane({
+  state,
+  selectedPolicyNumber,
+  selectedAssessmentId,
+  policyExporting,
+  policyExportError,
+  policyExportDisabled,
+  policyExportHelperText,
+  onExportPolicy,
+  onOpenAssessment,
+}) {
   return (
     <section className="card flex h-full min-h-0 flex-col overflow-hidden">
       <div className="border-b border-stone-200 bg-stone-50 px-4 py-3">
@@ -453,8 +513,25 @@ function ItemsPane({ state, selectedPolicyNumber, selectedAssessmentId, onOpenAs
               )}
             </p>
           </div>
-          {state.items?.length ? <p className="text-[11px] text-stone-500">{state.items.length} items</p> : null}
+          <div className="flex flex-col items-end gap-2">
+            {state.items?.length ? <p className="text-[11px] text-stone-500">{state.items.length} items</p> : null}
+            <button
+              type="button"
+              onClick={onExportPolicy}
+              disabled={policyExporting || policyExportDisabled}
+              title={policyExportDisabled ? policyExportHelperText : 'Export standalone policy workbook'}
+              className="rounded border border-stone-200 px-3 py-1.5 text-xs font-medium text-stone-500 hover:bg-white hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {policyExporting ? 'Exporting...' : 'Export Policy XLSX'}
+            </button>
+          </div>
         </div>
+        {policyExportHelperText ? (
+          <p className="mt-2 text-[11px] text-stone-500">{policyExportHelperText}</p>
+        ) : null}
+        {policyExportError ? (
+          <p className="mt-2 text-xs text-red-700">{policyExportError}</p>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -554,6 +631,7 @@ export default function RemediationWorkspace({ runId }) {
   const [isPending, startTransition] = useTransition();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [exportState, setExportState] = useState({ loading: false, error: null });
+  const [policyExportState, setPolicyExportState] = useState({ loading: false, error: null });
   const [summaryState, setSummaryState] = useState({ loading: true, data: null, error: null });
   const [groupsState, setGroupsState] = useState({ loading: true, data: null, error: null });
   const [itemsState, setItemsState] = useState({ loading: false, items: [], error: null, requestKey: null });
@@ -578,6 +656,12 @@ export default function RemediationWorkspace({ runId }) {
   const currentItemsRequestKey = selectedPolicyNumber
     ? `${runId}:${itemsQuery}:${refreshVersion}`
     : null;
+  const selectedGroup = groupsState.data?.groups?.find((group) => group.policyNumber === selectedPolicyNumber) || null;
+  const policyExportAvailability = getPolicyExportState(
+    selectedPolicyNumber,
+    selectedGroup,
+    groupsState.loading,
+  );
   const isRefreshing = summaryState.loading || groupsState.loading || itemsState.loading || detailState.loading;
   const currentFilters = {
     status: status || null,
@@ -639,6 +723,49 @@ export default function RemediationWorkspace({ runId }) {
     }
   }, [currentFilters, pageSize, runId, sort]);
 
+  const handlePolicyExportXlsx = useCallback(async () => {
+    if (!selectedGroup?.canonicalPolicyId) return;
+
+    setPolicyExportState({ loading: true, error: null });
+
+    try {
+      const response = await fetch(`/api/v6/remediation/policies/${encodeURIComponent(selectedGroup.canonicalPolicyId)}/export`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId,
+          filters: currentFilters,
+        }),
+      });
+
+      if (!response.ok) {
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        throw new Error(payload?.error || `Policy export failed (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const filename = parseFilenameFromDisposition(response.headers.get('Content-Disposition'))
+        || `policy_${selectedGroup.policyNumber || 'export'}_${runId}.xlsx`;
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(objectUrl);
+      setPolicyExportState({ loading: false, error: null });
+    } catch (error) {
+      setPolicyExportState({ loading: false, error: error.message });
+    }
+  }, [currentFilters, runId, selectedGroup]);
+
   const replaceParams = useCallback((updates, options = {}) => {
     const next = new URLSearchParams(searchParams.toString());
     if (options.resetPage !== false) next.delete('page');
@@ -653,6 +780,16 @@ export default function RemediationWorkspace({ runId }) {
       router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
     });
   }, [pathname, router, searchParams, startTransition]);
+
+  const handlePolicyLinkSaved = useCallback((payload) => {
+    const nextPolicyNumber = normalizeString(payload?.policyLink?.effectivePolicyNumber) || UNASSIGNED_BUCKET;
+    replaceParams({ policyNumber: nextPolicyNumber }, { resetPage: false });
+    refreshRemediationData();
+  }, [refreshRemediationData, replaceParams]);
+
+  useEffect(() => {
+    setPolicyExportState((current) => (current.loading ? current : { loading: false, error: null }));
+  }, [selectedPolicyNumber, groupsQuery]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -837,6 +974,11 @@ export default function RemediationWorkspace({ runId }) {
           state={itemsState}
           selectedPolicyNumber={selectedPolicyNumber}
           selectedAssessmentId={selectedAssessmentId}
+          policyExporting={policyExportState.loading}
+          policyExportError={policyExportState.error}
+          policyExportDisabled={policyExportAvailability.disabled}
+          policyExportHelperText={policyExportAvailability.helperText}
+          onExportPolicy={handlePolicyExportXlsx}
           onOpenAssessment={(assessmentId) => replaceParams({ assessmentId }, { resetPage: false })}
         />
       </div>
@@ -849,6 +991,8 @@ export default function RemediationWorkspace({ runId }) {
         detail={detailState.data}
         onClose={() => replaceParams({ assessmentId: null }, { resetPage: false })}
         onReviewSaved={refreshRemediationData}
+        onPolicyLinkSaved={handlePolicyLinkSaved}
+        onDefectSaved={refreshRemediationData}
       />
     </div>
   );

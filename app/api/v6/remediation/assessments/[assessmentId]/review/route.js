@@ -158,12 +158,14 @@ export async function PUT(req, { params }) {
           note: parsed.note,
           created_at: now,
           updated_at: now,
+          resolved_at: null,
         };
 
         const defectUpdate = {
           defect_class: parsed.defectClass,
           status: 'open',
           updated_at: now,
+          resolved_at: null,
         };
 
         if (parsed.note !== null) {
